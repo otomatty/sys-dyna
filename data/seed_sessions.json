@@ -1,0 +1,82 @@
+[
+  {
+    "session_id": "sess-2025-12-ad-revenue",
+    "user_id": "yamada.taro",
+    "created_at": "2025-12-04T03:11:00+00:00",
+    "updated_at": "2025-12-04T03:45:00+00:00",
+    "model_name": "MarketingMix_v3",
+    "chat_log": [
+      {
+        "role": "user",
+        "content": "広告費を1.5倍にしたら売上はどうなりますか? 既存モデルで試したいです。",
+        "ts": "2025-12-04T03:11:05+00:00"
+      },
+      {
+        "role": "assistant",
+        "content": "MarketingMix_v3 モデルで広告費を 1.5 倍にした感度分析を実行しました。売上は約 1.20 倍に増加する一方、利益率は 3pt 低下しました。",
+        "ts": "2025-12-04T03:14:22+00:00"
+      },
+      {
+        "role": "user",
+        "content": "利益率の低下要因を分解してください。",
+        "ts": "2025-12-04T03:30:10+00:00"
+      },
+      {
+        "role": "assistant",
+        "content": "広告費の限界効果が逓減する区間に入っており、追加広告 1 円あたりの売上寄与が低下したことが主因です。",
+        "ts": "2025-12-04T03:32:40+00:00"
+      }
+    ],
+    "final_state": {
+      "ad_spend_multiplier": 1.5,
+      "revenue_multiplier": 1.20,
+      "margin_delta_pt": -3.0
+    }
+  },
+  {
+    "session_id": "sess-2026-02-inventory",
+    "user_id": "suzuki.hanako",
+    "created_at": "2026-02-18T05:02:00+00:00",
+    "updated_at": "2026-02-18T05:33:00+00:00",
+    "model_name": "InventoryTurnover_v2",
+    "chat_log": [
+      {
+        "role": "user",
+        "content": "リードタイムを半分にしたとき、在庫回転率はどの程度改善しますか?",
+        "ts": "2026-02-18T05:02:05+00:00"
+      },
+      {
+        "role": "assistant",
+        "content": "InventoryTurnover_v2 で試算したところ、回転率は約 1.35 倍に改善しました。ただし発注ロットの最小単位制約で完全な比例改善にはなりません。",
+        "ts": "2026-02-18T05:08:11+00:00"
+      }
+    ],
+    "final_state": {
+      "lead_time_factor": 0.5,
+      "turnover_multiplier": 1.35
+    }
+  },
+  {
+    "session_id": "sess-2026-04-headcount",
+    "user_id": "tanaka.ichiro",
+    "created_at": "2026-04-09T01:20:00+00:00",
+    "updated_at": "2026-04-09T01:55:00+00:00",
+    "model_name": "WorkforceCost_v1",
+    "chat_log": [
+      {
+        "role": "user",
+        "content": "人件費を年率 5% で増やした場合の 5 年後の利益への影響は?",
+        "ts": "2026-04-09T01:20:08+00:00"
+      },
+      {
+        "role": "assistant",
+        "content": "WorkforceCost_v1 で 5 年間シミュレーションした結果、ベースラインに対して営業利益が約 7.8% 減少しました。",
+        "ts": "2026-04-09T01:28:30+00:00"
+      }
+    ],
+    "final_state": {
+      "wage_growth_rate": 0.05,
+      "operating_profit_delta_pct": -7.8
+    }
+  }
+]

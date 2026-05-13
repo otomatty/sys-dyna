@@ -1,0 +1,327 @@
+from __future__ import annotations
+
+import json
+import logging
+import sqlite3
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable
+
+from ..config import get_settings
+from ..db.connection import _connect  # type: ignore[attr-defined]
+from ..llm.client import LLMClient, LLMMessage, LLMToolCall
+from ..llm.prompts import SYSTEM_PROMPT
+from ..repository import sessions as sessions_repo
+from ..repository import tool_call_logs as logs_repo
+from ..tools.base import Tool, ToolError, ToolResult
+
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ToolInvocation:
+    """A single tool call that occurred within a turn, surfaced to UI / tests."""
+
+    name: str
+    arguments: dict[str, Any]
+    output: Any
+    duration_ms: int
+    error: str | None = None
+
+
+@dataclass
+class AgentTurnResult:
+    text: str
+    invocations: list[ToolInvocation] = field(default_factory=list)
+    hit_loop_limit: bool = False
+    hit_turn_timeout: bool = False
+
+
+class AgenticSearchOrchestrator:
+    """Implements F-01 / F-05.
+
+    Drives the LLM <-> tool loop with the limits from section 5.2:
+    - up to ``max_tool_calls`` tool invocations per turn
+    - 10 second per-tool timeout
+    - 60 second total turn budget
+    - persists tool call telemetry to ``tool_call_logs``
+    """
+
+    def __init__(
+        self,
+        llm: LLMClient,
+        tools: dict[str, Tool],
+        connection_factory: Callable[[], sqlite3.Connection] | None = None,
+        max_tool_calls: int | None = None,
+        per_tool_timeout_sec: float | None = None,
+        turn_timeout_sec: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        settings = get_settings()
+        self.llm = llm
+        self.tools = tools
+        self.max_tool_calls = max_tool_calls or settings.max_tool_calls
+        self.per_tool_timeout = per_tool_timeout_sec or settings.per_tool_timeout_sec
+        self.turn_timeout = turn_timeout_sec or settings.turn_timeout_sec
+        self._clock = clock
+
+        if connection_factory is None:
+            db_path: Path = settings.db_path
+            self._connect = lambda: _connect(db_path)
+        else:
+            self._connect = connection_factory
+
+    def run_turn(
+        self,
+        session_id: str,
+        user_text: str,
+        history: list[LLMMessage] | None = None,
+    ) -> AgentTurnResult:
+        history = list(history or [])
+        messages: list[LLMMessage] = [LLMMessage(role="system", content=SYSTEM_PROMPT)]
+        messages.extend(history)
+        messages.append(LLMMessage(role="user", content=user_text))
+
+        deadline = self._clock() + self.turn_timeout
+        invocations: list[ToolInvocation] = []
+        tool_definitions = [t.definition for t in self.tools.values()]
+
+        for step in range(self.max_tool_calls + 1):
+            remaining = deadline - self._clock()
+            if remaining <= 0:
+                return self._finalise_timeout(messages, invocations)
+
+            response = self.llm.generate(
+                messages=messages,
+                tools=tool_definitions,
+                thinking="medium",
+                timeout_sec=remaining,
+            )
+
+            if not response.tool_calls:
+                return AgentTurnResult(
+                    text=response.text,
+                    invocations=invocations,
+                    hit_loop_limit=False,
+                )
+
+            if step == self.max_tool_calls:
+                # We've already executed max_tool_calls tool batches; refuse another batch.
+                return self._finalise_loop_limit(messages, invocations, tool_definitions)
+
+            messages.append(
+                LLMMessage(role="assistant", content=response.text, tool_calls=list(response.tool_calls))
+            )
+
+            for call in response.tool_calls:
+                invocation = self._invoke_one(session_id, call, deadline)
+                invocations.append(invocation)
+
+                tool_message = LLMMessage(
+                    role="tool",
+                    content=json.dumps(
+                        invocation.output if invocation.error is None
+                        else {"error": invocation.error, "payload": invocation.output},
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                    tool_call_id=call.call_id,
+                    tool_name=call.name,
+                )
+                messages.append(tool_message)
+
+                if self._clock() >= deadline:
+                    return self._finalise_timeout(messages, invocations)
+
+        # Defensive fallback: should not normally reach here due to step == max check above.
+        return self._finalise_loop_limit(messages, invocations, tool_definitions)
+
+    def _invoke_one(
+        self,
+        session_id: str,
+        call: LLMToolCall,
+        deadline: float,
+    ) -> ToolInvocation:
+        tool = self.tools.get(call.name)
+        started = self._clock()
+        called_at = _now_iso()
+        if tool is None:
+            err = f"unknown tool: {call.name}"
+            duration_ms = int((self._clock() - started) * 1000)
+            self._log_tool_call(
+                session_id=session_id,
+                tool_name=call.name,
+                arguments=call.arguments,
+                output={"error": "unknown_tool", "message": err},
+                called_at=called_at,
+                duration_ms=duration_ms,
+            )
+            return ToolInvocation(
+                name=call.name,
+                arguments=call.arguments,
+                output=None,
+                duration_ms=duration_ms,
+                error=err,
+            )
+
+        budget = min(self.per_tool_timeout, max(0.0, deadline - self._clock()))
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_safe_run, tool, call.arguments)
+                result = future.result(timeout=budget)
+        except FutureTimeout:
+            duration_ms = int((self._clock() - started) * 1000)
+            err = f"tool '{call.name}' exceeded per-call timeout of {self.per_tool_timeout}s"
+            output: Any = {"error": "timeout", "message": err}
+            self._log_tool_call(
+                session_id=session_id,
+                tool_name=call.name,
+                arguments=call.arguments,
+                output=output,
+                called_at=called_at,
+                duration_ms=duration_ms,
+            )
+            return ToolInvocation(
+                name=call.name,
+                arguments=call.arguments,
+                output=output,
+                duration_ms=duration_ms,
+                error=err,
+            )
+
+        duration_ms = int((self._clock() - started) * 1000)
+        if isinstance(result, ToolError):
+            output_payload = result.to_payload()
+            self._log_tool_call(
+                session_id=session_id,
+                tool_name=call.name,
+                arguments=call.arguments,
+                output=output_payload,
+                called_at=called_at,
+                duration_ms=duration_ms,
+            )
+            return ToolInvocation(
+                name=call.name,
+                arguments=call.arguments,
+                output=output_payload,
+                duration_ms=duration_ms,
+                error=result.message,
+            )
+        if isinstance(result, Exception):
+            output_payload = {"error": "tool_exception", "message": str(result)}
+            self._log_tool_call(
+                session_id=session_id,
+                tool_name=call.name,
+                arguments=call.arguments,
+                output=output_payload,
+                called_at=called_at,
+                duration_ms=duration_ms,
+            )
+            return ToolInvocation(
+                name=call.name,
+                arguments=call.arguments,
+                output=output_payload,
+                duration_ms=duration_ms,
+                error=str(result),
+            )
+
+        assert isinstance(result, ToolResult)
+        self._log_tool_call(
+            session_id=session_id,
+            tool_name=call.name,
+            arguments=call.arguments,
+            output=result.payload,
+            called_at=called_at,
+            duration_ms=duration_ms,
+        )
+        return ToolInvocation(
+            name=call.name,
+            arguments=call.arguments,
+            output=result.payload,
+            duration_ms=duration_ms,
+        )
+
+    def _finalise_loop_limit(
+        self,
+        messages: list[LLMMessage],
+        invocations: list[ToolInvocation],
+        tool_definitions: list,
+    ) -> AgentTurnResult:
+        messages.append(
+            LLMMessage(
+                role="system",
+                content=(
+                    "ツール呼び出し回数の上限に達しました。これ以上ツールは利用できません。"
+                    "これまでに収集した情報のみで、ユーザーへの最終回答を日本語で生成してください。"
+                ),
+            )
+        )
+        try:
+            final = self.llm.generate(messages=messages, tools=[], thinking="medium")
+            text = final.text or "(情報が不十分なため十分な回答ができませんでした。)"
+        except Exception as e:  # pragma: no cover - defensive
+            logger.exception("final-answer generation failed: %s", e)
+            text = "(最終応答の生成に失敗しました。)"
+        return AgentTurnResult(text=text, invocations=invocations, hit_loop_limit=True)
+
+    def _finalise_timeout(
+        self,
+        messages: list[LLMMessage],
+        invocations: list[ToolInvocation],
+    ) -> AgentTurnResult:
+        return AgentTurnResult(
+            text="(処理時間が上限に達したため、ここまでで応答します。)",
+            invocations=invocations,
+            hit_turn_timeout=True,
+        )
+
+    def _log_tool_call(
+        self,
+        *,
+        session_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        output: Any,
+        called_at: str,
+        duration_ms: int,
+    ) -> None:
+        try:
+            conn = self._connect()
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("could not open DB for tool log: %s", e)
+            return
+        try:
+            # The session row must exist before we can FK-reference it.
+            if not sessions_repo.get(conn, session_id):
+                logger.debug("skipping tool log: session %s not present", session_id)
+                return
+            logs_repo.record(
+                conn,
+                logs_repo.ToolCallLog(
+                    session_id=session_id,
+                    tool_name=tool_name,
+                    tool_input=arguments,
+                    tool_output=output,
+                    called_at=called_at,
+                    duration_ms=duration_ms,
+                ),
+            )
+        finally:
+            conn.close()
+
+
+def _safe_run(tool: Tool, arguments: dict[str, Any]) -> Any:
+    try:
+        return tool.run(arguments)
+    except ToolError as e:
+        return e
+    except Exception as e:  # pragma: no cover - defensive
+        return e
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
