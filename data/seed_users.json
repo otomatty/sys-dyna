@@ -1,0 +1,17 @@
+[
+  {
+    "user_id": "yamada.taro",
+    "display_name": "山田 太郎",
+    "department": "経営企画"
+  },
+  {
+    "user_id": "suzuki.hanako",
+    "display_name": "鈴木 花子",
+    "department": "サプライチェーン"
+  },
+  {
+    "user_id": "tanaka.ichiro",
+    "display_name": "田中 一郎",
+    "department": "人事"
+  }
+]
