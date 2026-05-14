@@ -64,9 +64,17 @@ class AgenticSearchOrchestrator:
         settings = get_settings()
         self.llm = llm
         self.tools = tools
-        self.max_tool_calls = max_tool_calls or settings.max_tool_calls
-        self.per_tool_timeout = per_tool_timeout_sec or settings.per_tool_timeout_sec
-        self.turn_timeout = turn_timeout_sec or settings.turn_timeout_sec
+        self.max_tool_calls = (
+            settings.max_tool_calls if max_tool_calls is None else max_tool_calls
+        )
+        self.per_tool_timeout = (
+            settings.per_tool_timeout_sec
+            if per_tool_timeout_sec is None
+            else per_tool_timeout_sec
+        )
+        self.turn_timeout = (
+            settings.turn_timeout_sec if turn_timeout_sec is None else turn_timeout_sec
+        )
         self._clock = clock
 
         if connection_factory is None:
@@ -90,17 +98,24 @@ class AgenticSearchOrchestrator:
         invocations: list[ToolInvocation] = []
         tool_definitions = [t.definition for t in self.tools.values()]
 
-        for step in range(self.max_tool_calls + 1):
+        while True:
             remaining = deadline - self._clock()
             if remaining <= 0:
                 return self._finalise_timeout(messages, invocations)
 
-            response = self.llm.generate(
-                messages=messages,
-                tools=tool_definitions,
-                thinking="medium",
-                timeout_sec=remaining,
-            )
+            try:
+                response = self.llm.generate(
+                    messages=messages,
+                    tools=tool_definitions,
+                    thinking="medium",
+                    timeout_sec=remaining,
+                )
+            except Exception:
+                logger.exception("llm.generate failed in main loop")
+                return AgentTurnResult(
+                    text="(応答生成中にエラーが発生しました。時間をおいて再試行してください。)",
+                    invocations=invocations,
+                )
 
             if not response.tool_calls:
                 return AgentTurnResult(
@@ -109,15 +124,19 @@ class AgenticSearchOrchestrator:
                     hit_loop_limit=False,
                 )
 
-            if step == self.max_tool_calls:
-                # We've already executed max_tool_calls tool batches; refuse another batch.
-                return self._finalise_loop_limit(messages, invocations, tool_definitions)
+            if len(invocations) >= self.max_tool_calls:
+                # The cap is on cumulative tool invocations, not on LLM iterations.
+                return self._finalise_loop_limit(messages, invocations, deadline)
+
+            # Truncate this batch so we never exceed the per-turn invocation cap.
+            permitted = self.max_tool_calls - len(invocations)
+            calls_to_run = list(response.tool_calls[:permitted])
 
             messages.append(
-                LLMMessage(role="assistant", content=response.text, tool_calls=list(response.tool_calls))
+                LLMMessage(role="assistant", content=response.text, tool_calls=calls_to_run)
             )
 
-            for call in response.tool_calls:
+            for call in calls_to_run:
                 invocation = self._invoke_one(session_id, call, deadline)
                 invocations.append(invocation)
 
@@ -137,8 +156,8 @@ class AgenticSearchOrchestrator:
                 if self._clock() >= deadline:
                     return self._finalise_timeout(messages, invocations)
 
-        # Defensive fallback: should not normally reach here due to step == max check above.
-        return self._finalise_loop_limit(messages, invocations, tool_definitions)
+            if len(invocations) >= self.max_tool_calls:
+                return self._finalise_loop_limit(messages, invocations, deadline)
 
     def _invoke_one(
         self,
@@ -169,29 +188,36 @@ class AgenticSearchOrchestrator:
             )
 
         budget = min(self.per_tool_timeout, max(0.0, deadline - self._clock()))
+        # Do not use `with ThreadPoolExecutor(...)`: its __exit__ shutdown(wait=True)
+        # would wait for a hung tool thread to complete, defeating the timeout.
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_safe_run, tool, call.arguments)
         try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_safe_run, tool, call.arguments)
+            try:
                 result = future.result(timeout=budget)
-        except FutureTimeout:
-            duration_ms = int((self._clock() - started) * 1000)
-            err = f"tool '{call.name}' exceeded per-call timeout of {self.per_tool_timeout}s"
-            output: Any = {"error": "timeout", "message": err}
-            self._log_tool_call(
-                session_id=session_id,
-                tool_name=call.name,
-                arguments=call.arguments,
-                output=output,
-                called_at=called_at,
-                duration_ms=duration_ms,
-            )
-            return ToolInvocation(
-                name=call.name,
-                arguments=call.arguments,
-                output=output,
-                duration_ms=duration_ms,
-                error=err,
-            )
+            except FutureTimeout:
+                future.cancel()
+                duration_ms = int((self._clock() - started) * 1000)
+                err = f"tool '{call.name}' exceeded per-call timeout of {self.per_tool_timeout}s"
+                output: Any = {"error": "timeout", "message": err}
+                self._log_tool_call(
+                    session_id=session_id,
+                    tool_name=call.name,
+                    arguments=call.arguments,
+                    output=output,
+                    called_at=called_at,
+                    duration_ms=duration_ms,
+                )
+                return ToolInvocation(
+                    name=call.name,
+                    arguments=call.arguments,
+                    output=output,
+                    duration_ms=duration_ms,
+                    error=err,
+                )
+        finally:
+            # Don't block the orchestrator on a hung worker thread.
+            executor.shutdown(wait=False)
 
         duration_ms = int((self._clock() - started) * 1000)
         if isinstance(result, ToolError):
@@ -249,7 +275,7 @@ class AgenticSearchOrchestrator:
         self,
         messages: list[LLMMessage],
         invocations: list[ToolInvocation],
-        tool_definitions: list,
+        deadline: float,
     ) -> AgentTurnResult:
         messages.append(
             LLMMessage(
@@ -260,8 +286,14 @@ class AgenticSearchOrchestrator:
                 ),
             )
         )
+        remaining = max(0.0, deadline - self._clock())
         try:
-            final = self.llm.generate(messages=messages, tools=[], thinking="medium")
+            final = self.llm.generate(
+                messages=messages,
+                tools=[],
+                thinking="medium",
+                timeout_sec=remaining,
+            )
             text = final.text or "(情報が不十分なため十分な回答ができませんでした。)"
         except Exception as e:  # pragma: no cover - defensive
             logger.exception("final-answer generation failed: %s", e)

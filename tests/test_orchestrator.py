@@ -101,6 +101,44 @@ def test_loop_limit_triggers_finalisation(seeded_db_path):
     assert result.text == "LOOP-CAP-FINAL"
 
 
+class _BatchLLM:
+    """Returns a batch of `batch_size` tool calls in a single response, then a
+    final answer once tools is empty.
+    """
+
+    def __init__(self, batch_size: int) -> None:
+        self.batch_size = batch_size
+
+    def generate(self, messages, tools, thinking="medium", timeout_sec=None):
+        if not tools:
+            return LLMResponse(text="BATCH-CAPPED")
+        return LLMResponse(
+            text="",
+            tool_calls=[
+                LLMToolCall(name="query_sessions", arguments={"keywords": ["a"]})
+                for _ in range(self.batch_size)
+            ],
+        )
+
+
+def test_cap_truncates_oversized_batch(seeded_db_path):
+    """When a single LLM response asks for more tool calls than the cap allows,
+    the orchestrator must truncate the batch instead of running every call.
+    """
+    session_id = _ensure_session(seeded_db_path, "batch-cap-session")
+    tools = build_default_tools(seeded_db_path)
+    orch = AgenticSearchOrchestrator(
+        llm=_BatchLLM(batch_size=5),
+        tools=tools,
+        connection_factory=lambda: _connect(seeded_db_path),
+        max_tool_calls=2,
+    )
+    result = orch.run_turn(session_id=session_id, user_text="batched")
+    assert result.hit_loop_limit
+    assert len(result.invocations) == 2
+    assert result.text == "BATCH-CAPPED"
+
+
 class _SlowTool(Tool):
     definition = ToolDefinition(
         name="slow_tool",
@@ -138,11 +176,16 @@ def test_per_tool_timeout(seeded_db_path):
         per_tool_timeout_sec=0.2,
         turn_timeout_sec=5.0,
     )
+    started = time.monotonic()
     result = orch.run_turn(session_id=session_id, user_text="run slow tool")
+    elapsed = time.monotonic() - started
     assert len(result.invocations) == 1
     inv = result.invocations[0]
     assert inv.error is not None
     assert "timeout" in inv.error.lower()
+    # The orchestrator must not block waiting for the hung worker to finish:
+    # a 2s sleep with a 0.2s timeout should return well under 1s.
+    assert elapsed < 1.0, f"timeout did not abort early: elapsed={elapsed:.2f}s"
 
 
 class _ErrorTool(Tool):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime
 from typing import Any, Callable
 
 from .base import Tool, ToolDefinition, ToolError, ToolResult
@@ -86,19 +87,26 @@ class QuerySessionsTool(Tool):
         if user_id:
             where.append("user_id = ?")
             params.append(user_id)
-        if since:
+        if since is not None:
+            if not isinstance(since, str):
+                raise ToolError("invalid_argument", "since must be an ISO8601 string")
+            try:
+                datetime.fromisoformat(since.replace("Z", "+00:00"))
+            except ValueError as e:
+                raise ToolError(
+                    "invalid_argument", "since must be a valid ISO8601 timestamp"
+                ) from e
             where.append("created_at >= ?")
             params.append(since)
 
         sql = (
-            "SELECT session_id, created_at, user_id, model_name, "
-            "       substr(chat_log, 1, ?) AS excerpt "
+            "SELECT session_id, created_at, user_id, model_name, chat_log "
             "FROM sessions "
             f"WHERE {' AND '.join(where)} "
             "ORDER BY created_at DESC "
             "LIMIT ?"
         )
-        bind = [EXCERPT_LEN, *params, limit]
+        bind = [*params, limit]
 
         conn = self._connect()
         try:
@@ -108,7 +116,7 @@ class QuerySessionsTool(Tool):
 
         results: list[dict[str, Any]] = []
         for r in rows:
-            excerpt = _summarise_chat_log(r["excerpt"])
+            excerpt = _summarise_chat_log(r["chat_log"])
             results.append(
                 {
                     "session_id": r["session_id"],

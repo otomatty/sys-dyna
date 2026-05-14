@@ -49,4 +49,4 @@ pytest
 | F-06 セッション永続化 | `src/sys_dyna/repository/sessions.py` + `app.py` の毎ターン upsert |
 | F-07 利用ログ収集 | `src/sys_dyna/repository/tool_call_logs.py` + オーケストレータでの記録 |
 
-詳細は `/root/.claude/plans/root-claude-uploads-502f27c0-fb3b-4ad5-sparkling-map.md` を参照。
+設計書からの逸脱(SQLite / モック LLM / 固定ユーザー / Context Caching 未実装)についてはこの README 冒頭を参照。

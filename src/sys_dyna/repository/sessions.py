@@ -101,12 +101,21 @@ def append_messages(
     session_id: str,
     messages: list[ChatMessage],
 ) -> None:
-    rec = get(conn, session_id)
-    if rec is None:
-        raise KeyError(f"session not found: {session_id}")
-    rec.chat_log.extend(messages)
-    rec.updated_at = _now_iso()
-    upsert(conn, rec)
+    # Serialize the read-modify-write so concurrent appends do not clobber each
+    # other's chat_log. BEGIN IMMEDIATE takes a SQLite write lock up front.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        rec = get(conn, session_id)
+        if rec is None:
+            raise KeyError(f"session not found: {session_id}")
+        rec.chat_log.extend(messages)
+        rec.updated_at = _now_iso()
+        upsert(conn, rec)
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")
 
 
 def _row_to_record(row: sqlite3.Row) -> SessionRecord:

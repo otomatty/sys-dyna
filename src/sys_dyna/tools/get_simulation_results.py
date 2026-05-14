@@ -67,9 +67,11 @@ class GetSimulationResultsTool(Tool):
             )
 
         data = record.time_series_data
-        if variable_names:
-            filtered = {k: v for k, v in data.items() if k in set(variable_names)}
-            missing = [v for v in variable_names if v not in data]
+        if variable_names is not None:
+            requested = set(variable_names)
+            data_keys = set(data)
+            filtered = {k: v for k, v in data.items() if k in requested}
+            missing = [v for v in variable_names if v not in data_keys]
         else:
             filtered = data
             missing = []

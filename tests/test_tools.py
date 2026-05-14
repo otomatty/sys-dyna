@@ -5,7 +5,7 @@ import pytest
 from sys_dyna.tools.base import ToolError
 from sys_dyna.tools.get_session_full import GetSessionFullTool
 from sys_dyna.tools.get_simulation_results import GetSimulationResultsTool
-from sys_dyna.tools.query_sessions import QuerySessionsTool
+from sys_dyna.tools.query_sessions import MAX_LIMIT, QuerySessionsTool
 
 
 def test_query_sessions_keyword_match(connection_factory):
@@ -35,8 +35,16 @@ def test_query_sessions_model_filter(connection_factory):
 def test_query_sessions_limit_clamped(connection_factory):
     tool = QuerySessionsTool(connection_factory)
     result = tool.run({"keywords": ["シミュレーション"], "limit": 9999})
-    # MAX_LIMIT applied, but seed only has so many rows; just check it does not error
-    assert result.payload["count"] >= 0
+    # Clamp must apply: returned count cannot exceed MAX_LIMIT regardless of input.
+    assert result.payload["count"] <= MAX_LIMIT
+    assert len(result.payload["sessions"]) == result.payload["count"]
+
+
+def test_query_sessions_invalid_since(connection_factory):
+    tool = QuerySessionsTool(connection_factory)
+    with pytest.raises(ToolError) as exc:
+        tool.run({"keywords": ["広告費"], "since": "not-a-date"})
+    assert exc.value.code == "invalid_argument"
 
 
 def test_query_sessions_invalid_args(connection_factory):
@@ -78,3 +86,14 @@ def test_get_simulation_results_filtered(connection_factory):
     payload = result.payload
     assert set(payload["variables"].keys()) == {"revenue"}
     assert payload["missing_variables"] == ["missing"]
+
+
+def test_get_simulation_results_empty_list_returns_no_variables(connection_factory):
+    tool = GetSimulationResultsTool(connection_factory)
+    result = tool.run(
+        {"session_id": "sess-2025-12-ad-revenue", "variable_names": []}
+    )
+    payload = result.payload
+    # An empty (but provided) list means "no variables requested", not "all variables".
+    assert payload["variables"] == {}
+    assert payload["missing_variables"] == []

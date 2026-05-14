@@ -6,7 +6,7 @@ import streamlit as st
 
 from sys_dyna.auth import get_current_user
 from sys_dyna.config import get_settings
-from sys_dyna.db.connection import _connect, init_schema  # type: ignore[attr-defined]
+from sys_dyna.db.connection import get_connection, init_schema
 from sys_dyna.llm.client import LLMMessage
 from sys_dyna.llm.mock_client import MockGeminiClient
 from sys_dyna.orchestrator import AgenticSearchOrchestrator
@@ -28,8 +28,7 @@ def _bootstrap() -> None:
     init_schema(settings.db_path)
 
     user = get_current_user()
-    conn = _connect(settings.db_path)
-    try:
+    with get_connection(settings.db_path) as conn:
         users_repo.upsert(
             conn,
             UserRow(
@@ -50,8 +49,6 @@ def _bootstrap() -> None:
             st.session_state.session_id = session_id
             st.session_state.chat_history = []  # list[ChatMessage]
             st.session_state.invocations_by_turn = []  # list[list[ToolInvocation]]
-    finally:
-        conn.close()
 
 
 def _to_llm_history(history: list[ChatMessage]) -> list[LLMMessage]:
@@ -110,22 +107,22 @@ def main() -> None:
     history.append(ChatMessage(role="assistant", content=result.text))
     invocations_by_turn.append(result.invocations)
 
-    conn = _connect(settings.db_path)
-    try:
+    now = _now_iso()
+    with get_connection(settings.db_path) as conn:
+        # upsert preserves created_at via ON CONFLICT DO UPDATE; passing `now`
+        # for created_at is only used on first insert.
         sessions_repo.upsert(
             conn,
             sessions_repo.SessionRecord(
                 session_id=session_id,
                 user_id=user.user_id,
-                created_at=_get_or_keep_created_at(conn, session_id),
-                updated_at=_now_iso(),
+                created_at=now,
+                updated_at=now,
                 model_name=settings.model_name,
                 chat_log=list(history),
                 final_state=None,
             ),
         )
-    finally:
-        conn.close()
 
     with st.chat_message("assistant"):
         st.markdown(result.text)
@@ -135,13 +132,6 @@ def main() -> None:
             st.warning("ターンのタイムアウトに達しました。")
         if result.invocations:
             st.caption(f"このターンで {len(result.invocations)} 件のツール呼び出しを実行しました。")
-
-
-def _get_or_keep_created_at(conn, session_id: str) -> str:
-    rec = sessions_repo.get(conn, session_id)
-    if rec is not None:
-        return rec.created_at
-    return _now_iso()
 
 
 def _now_iso() -> str:

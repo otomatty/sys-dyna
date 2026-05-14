@@ -31,6 +31,17 @@ class Settings(BaseSettings):
     turn_timeout_sec: float = 60.0
 
 
+def _validate(s: Settings) -> Settings:
+    # Fail-fast so the loop / timeout safety limits cannot be silently disabled.
+    if s.max_tool_calls <= 0:
+        raise ValueError("SYS_DYNA_MAX_TOOL_CALLS must be > 0")
+    if s.per_tool_timeout_sec <= 0:
+        raise ValueError("SYS_DYNA_PER_TOOL_TIMEOUT_SEC must be > 0")
+    if s.turn_timeout_sec <= 0:
+        raise ValueError("SYS_DYNA_TURN_TIMEOUT_SEC must be > 0")
+    return s
+
+
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return _validate(Settings())
