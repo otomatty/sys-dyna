@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from sys_dyna.db.connection import _connect
 from sys_dyna.llm.client import LLMMessage, LLMResponse, LLMToolCall
 from sys_dyna.llm.mock_client import MockGeminiClient
@@ -10,6 +12,19 @@ from sys_dyna.repository import sessions as sessions_repo
 from sys_dyna.repository import tool_call_logs as logs_repo
 from sys_dyna.tools import build_default_tools
 from sys_dyna.tools.base import Tool, ToolDefinition, ToolError, ToolResult
+
+
+def test_constructor_rejects_non_positive_overrides():
+    for kwargs in (
+        {"max_tool_calls": 0},
+        {"max_tool_calls": -1},
+        {"per_tool_timeout_sec": 0},
+        {"per_tool_timeout_sec": -0.1},
+        {"turn_timeout_sec": 0},
+        {"turn_timeout_sec": -1.0},
+    ):
+        with pytest.raises(ValueError):
+            AgenticSearchOrchestrator(llm=MockGeminiClient(), tools={}, **kwargs)
 
 
 def _ensure_session(db_path, session_id: str = "test-session") -> str:

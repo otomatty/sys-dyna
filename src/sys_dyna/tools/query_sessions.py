@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .base import Tool, ToolDefinition, ToolError, ToolResult
@@ -76,6 +76,11 @@ class QuerySessionsTool(Tool):
             raise ToolError("invalid_argument", "limit must be an integer") from e
         limit = max(1, min(limit, MAX_LIMIT))
 
+        if model_name is not None and not isinstance(model_name, str):
+            raise ToolError("invalid_argument", "model_name must be a string")
+        if user_id is not None and not isinstance(user_id, str):
+            raise ToolError("invalid_argument", "user_id must be a string")
+
         where: list[str] = []
         params: list[Any] = []
         for kw in keywords:
@@ -91,13 +96,20 @@ class QuerySessionsTool(Tool):
             if not isinstance(since, str):
                 raise ToolError("invalid_argument", "since must be an ISO8601 string")
             try:
-                datetime.fromisoformat(since.replace("Z", "+00:00"))
+                since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
             except ValueError as e:
                 raise ToolError(
                     "invalid_argument", "since must be a valid ISO8601 timestamp"
                 ) from e
+            if since_dt.tzinfo is None:
+                raise ToolError(
+                    "invalid_argument", "since must include timezone information"
+                )
+            # SQLite compares TEXT lexicographically, so we must normalise both
+            # operands to the same UTC ISO8601 form for comparisons to be
+            # timezone-correct.
             where.append("created_at >= ?")
-            params.append(since)
+            params.append(since_dt.astimezone(timezone.utc).isoformat())
 
         sql = (
             "SELECT session_id, created_at, user_id, model_name, chat_log "

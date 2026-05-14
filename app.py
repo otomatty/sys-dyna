@@ -52,11 +52,11 @@ def _bootstrap() -> None:
 
 
 def _to_llm_history(history: list[ChatMessage]) -> list[LLMMessage]:
-    out: list[LLMMessage] = []
-    for m in history:
-        if m.role in ("user", "assistant"):
-            out.append(LLMMessage(role=m.role, content=m.content))  # type: ignore[arg-type]
-    return out
+    return [
+        LLMMessage(role=m.role, content=m.content)  # type: ignore[arg-type]
+        for m in history
+        if m.role in ("user", "assistant")
+    ]
 
 
 def main() -> None:

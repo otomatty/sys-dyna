@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,6 +75,14 @@ class AgenticSearchOrchestrator:
         self.turn_timeout = (
             settings.turn_timeout_sec if turn_timeout_sec is None else turn_timeout_sec
         )
+        # Apply the same fail-fast checks to caller-supplied overrides so the
+        # settings-level validation in get_settings() cannot be bypassed.
+        if self.max_tool_calls <= 0:
+            raise ValueError("max_tool_calls must be > 0")
+        if self.per_tool_timeout <= 0:
+            raise ValueError("per_tool_timeout_sec must be > 0")
+        if self.turn_timeout <= 0:
+            raise ValueError("turn_timeout_sec must be > 0")
         self._clock = clock
 
         if connection_factory is None:
@@ -188,36 +196,31 @@ class AgenticSearchOrchestrator:
             )
 
         budget = min(self.per_tool_timeout, max(0.0, deadline - self._clock()))
-        # Do not use `with ThreadPoolExecutor(...)`: its __exit__ shutdown(wait=True)
-        # would wait for a hung tool thread to complete, defeating the timeout.
-        executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(_safe_run, tool, call.arguments)
-        try:
-            try:
-                result = future.result(timeout=budget)
-            except FutureTimeout:
-                future.cancel()
-                duration_ms = int((self._clock() - started) * 1000)
-                err = f"tool '{call.name}' exceeded per-call timeout of {self.per_tool_timeout}s"
-                output: Any = {"error": "timeout", "message": err}
-                self._log_tool_call(
-                    session_id=session_id,
-                    tool_name=call.name,
-                    arguments=call.arguments,
-                    output=output,
-                    called_at=called_at,
-                    duration_ms=duration_ms,
-                )
-                return ToolInvocation(
-                    name=call.name,
-                    arguments=call.arguments,
-                    output=output,
-                    duration_ms=duration_ms,
-                    error=err,
-                )
-        finally:
-            # Don't block the orchestrator on a hung worker thread.
-            executor.shutdown(wait=False)
+        # Use a daemon thread (not ThreadPoolExecutor): a daemon thread cannot
+        # block interpreter shutdown, so even if a tool hangs forever the
+        # process can still exit cleanly. ThreadPoolExecutor workers are
+        # non-daemon and accumulate over repeated timeouts.
+        timed_out, payload = _run_with_timeout(_safe_run, (tool, call.arguments), budget)
+        if timed_out:
+            duration_ms = int((self._clock() - started) * 1000)
+            err = f"tool '{call.name}' exceeded per-call timeout of {self.per_tool_timeout}s"
+            output: Any = {"error": "timeout", "message": err}
+            self._log_tool_call(
+                session_id=session_id,
+                tool_name=call.name,
+                arguments=call.arguments,
+                output=output,
+                called_at=called_at,
+                duration_ms=duration_ms,
+            )
+            return ToolInvocation(
+                name=call.name,
+                arguments=call.arguments,
+                output=output,
+                duration_ms=duration_ms,
+                error=err,
+            )
+        result = payload
 
         duration_ms = int((self._clock() - started) * 1000)
         if isinstance(result, ToolError):
@@ -353,6 +356,34 @@ def _safe_run(tool: Tool, arguments: dict[str, Any]) -> Any:
         return e
     except Exception as e:  # pragma: no cover - defensive
         return e
+
+
+def _run_with_timeout(
+    fn: Callable[..., Any],
+    args: tuple[Any, ...],
+    timeout: float,
+) -> tuple[bool, Any]:
+    """Run ``fn(*args)`` in a daemon thread, returning (timed_out, result).
+
+    Using a daemon thread (instead of a ThreadPoolExecutor) ensures that a
+    hung tool cannot prevent interpreter shutdown — leaked threads die with
+    the process. The thread cannot actually be killed if it hangs, but
+    `daemon=True` keeps the process exitable.
+    """
+    holder: list[Any] = []
+
+    def target() -> None:
+        holder.append(fn(*args))
+
+    t = threading.Thread(target=target, daemon=True, name="sys-dyna-tool")
+    t.start()
+    t.join(timeout=timeout)
+    if t.is_alive():
+        return True, None
+    if not holder:
+        # Should not happen, but treat as timeout to be safe.
+        return True, None
+    return False, holder[0]
 
 
 def _now_iso() -> str:

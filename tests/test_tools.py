@@ -47,6 +47,35 @@ def test_query_sessions_invalid_since(connection_factory):
     assert exc.value.code == "invalid_argument"
 
 
+def test_query_sessions_since_without_timezone_rejected(connection_factory):
+    tool = QuerySessionsTool(connection_factory)
+    with pytest.raises(ToolError) as exc:
+        tool.run({"keywords": ["広告費"], "since": "2026-01-01T00:00:00"})
+    assert exc.value.code == "invalid_argument"
+
+
+def test_query_sessions_since_normalised_to_utc(connection_factory):
+    # The seed has a 2025-12-04T03:11:00+00:00 ad-revenue session. A JST-anchored
+    # since value of 2025-12-04T12:00:00+09:00 == 2025-12-04T03:00:00Z must still
+    # include that session.
+    tool = QuerySessionsTool(connection_factory)
+    result = tool.run(
+        {"keywords": ["広告費"], "since": "2025-12-04T12:00:00+09:00"}
+    )
+    assert result.payload["count"] == 1
+    assert result.payload["sessions"][0]["session_id"] == "sess-2025-12-ad-revenue"
+
+
+def test_query_sessions_rejects_non_string_filters(connection_factory):
+    tool = QuerySessionsTool(connection_factory)
+    with pytest.raises(ToolError) as exc:
+        tool.run({"keywords": ["広告費"], "model_name": 123})
+    assert exc.value.code == "invalid_argument"
+    with pytest.raises(ToolError) as exc:
+        tool.run({"keywords": ["広告費"], "user_id": ["not", "a", "string"]})
+    assert exc.value.code == "invalid_argument"
+
+
 def test_query_sessions_invalid_args(connection_factory):
     tool = QuerySessionsTool(connection_factory)
     with pytest.raises(ToolError):
