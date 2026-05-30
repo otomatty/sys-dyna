@@ -18,7 +18,8 @@ class Planner(Protocol):
     """
 
     def classify_intent(self, user_text: str, history: list[dict[str, Any]]) -> str:
-        """Return one of: 'simulate', 'past_reference', 'general'."""
+        """Return one of: 'simulate', 'past_reference', 'montecarlo',
+        'optimize', 'general'."""
         ...
 
     def select_model(
@@ -43,6 +44,24 @@ class Planner(Protocol):
         present) or ``model.default_params()`` and only override what the user
         asked to change, so follow-up edits ("then make churn 0.1") preserve the
         previous run's unchanged parameters.
+        """
+        ...
+
+    def build_analysis_request(
+        self,
+        user_text: str,
+        model: ModelSpec,
+        kind: str,
+        history: list[dict[str, Any]],
+        base_params: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        """Build the arguments for an advanced analysis (Monte Carlo / Bayesian
+        optimization), in the dict shape the SimulationAgent's tools accept.
+
+        ``kind`` is 'montecarlo' or 'optimize'. Implementations may delegate to
+        ``simulation.analysis.build_default_analysis_request`` for a heuristic
+        default. The method is optional: the graph falls back to that helper for
+        planners that do not implement it.
         """
         ...
 

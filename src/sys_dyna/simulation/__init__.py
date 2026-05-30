@@ -10,6 +10,7 @@ from .models import (
     ScenarioResult,
     SimulationRun,
 )
+from .objective import Objective
 
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "Scenario",
     "ScenarioResult",
     "SimulationRun",
+    "Objective",
     "list_models",
     "get_model",
     "catalog_summary",

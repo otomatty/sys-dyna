@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ..simulation.analysis import build_default_analysis_request
 from ..simulation.models import ModelSpec, Scenario
 from .planner import Planner
 
@@ -10,6 +11,10 @@ from .planner import Planner
 # Keyword cues (mirrors the spirit of the v1.0 MockGeminiClient).
 _SIMULATE_CUES = ("倍", "したら", "増や" , "減ら" , "上げ", "下げ", "シミュ", "予測", "どうなる", "なったら")
 _PAST_CUES = ("過去", "以前", "前回", "似た", "事例", "履歴", "あった")
+# Advanced-analysis cues. Checked before the simulate cues so e.g. "広告費を
+# 最適化したら" routes to optimisation rather than a plain scenario run.
+_MONTECARLO_CUES = ("モンテカルロ", "monte", "ばらつき", "不確実", "リスク", "確率", "分布", "感度")
+_OPTIMIZE_CUES = ("最適化", "最適な", "ベイズ", "optimi", "最大化", "最小化", "チューニング", "探索")
 
 # "1.5倍" / "２倍" style multipliers.
 _MULT_RE = re.compile(r"([0-9０-９]+(?:[.．][0-9０-９]+)?)\s*倍")
@@ -29,6 +34,12 @@ class HeuristicPlanner(Planner):
 
     def classify_intent(self, user_text: str, history: list[dict[str, Any]]) -> str:
         text = user_text or ""
+        lowered = text.lower()
+        # Advanced analyses take precedence over a plain simulate request.
+        if any(c in text or c in lowered for c in _MONTECARLO_CUES):
+            return "montecarlo"
+        if any(c in text or c in lowered for c in _OPTIMIZE_CUES):
+            return "optimize"
         if any(c in text for c in _SIMULATE_CUES):
             return "simulate"
         if any(c in text for c in _PAST_CUES):
@@ -111,6 +122,19 @@ class HeuristicPlanner(Planner):
             params.update(overrides)
             return [Scenario(name="custom", params=params)]
         return [Scenario(name="base", params=dict(base))]
+
+    def build_analysis_request(
+        self,
+        user_text: str,
+        model: ModelSpec,
+        kind: str,
+        history: list[dict[str, Any]],
+        base_params: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        normalized = "montecarlo" if kind not in ("montecarlo", "optimize") else kind
+        return build_default_analysis_request(
+            _normalize_digits(user_text or ""), model, normalized, base_params
+        )
 
     def analyze(
         self,
