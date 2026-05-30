@@ -33,9 +33,18 @@ class HeuristicPlanner(Planner):
             return "simulate"
         if any(c in text for c in _PAST_CUES):
             return "past_reference"
+        # Follow-up: after a prior exchange, a bare numeric tweak ("churn を 0.1 に")
+        # is treated as a continued simulation request.
+        if history and re.search(r"[0-9０-９]", _normalize_digits(text)):
+            return "simulate"
         return "general"
 
-    def select_model(self, user_text: str, catalog: list[dict[str, str]]) -> str | None:
+    def select_model(
+        self,
+        user_text: str,
+        catalog: list[dict[str, str]],
+        history: list[dict[str, Any]],
+    ) -> str | None:
         if not catalog:
             return None
         # Prefer a model whose name/description shares a keyword with the query.
@@ -45,22 +54,41 @@ class HeuristicPlanner(Planner):
                 return entry["model_id"]
         return catalog[0]["model_id"]
 
-    def extract_scenarios(self, user_text: str, model: ModelSpec) -> list[Scenario]:
+    def extract_scenarios(
+        self,
+        user_text: str,
+        model: ModelSpec,
+        history: list[dict[str, Any]],
+    ) -> list[Scenario]:
         defaults = model.default_params()
         text = _normalize_digits(user_text or "")
         mults = [float(m) for m in _MULT_RE.findall(text)]
 
-        # The primary driver parameter to scale (first param, e.g. ad_spend).
-        driver = model.params[0].name if model.params else None
-        if driver is None or not mults:
-            return [Scenario(name="base", params=dict(defaults))]
+        # Explicit "param 数値" overrides (matched by parameter name or label).
+        overrides: dict[str, float] = {}
+        for p in model.params:
+            for token in (p.name, p.label):
+                if not token:
+                    continue
+                m = re.search(re.escape(token) + r"[^0-9.-]{0,6}([0-9]+(?:\.[0-9]+)?)", text)
+                if m:
+                    overrides[p.name] = float(m.group(1))
+                    break
 
-        scenarios: list[Scenario] = []
-        for mult in mults[:5]:
+        driver = model.params[0].name if model.params else None
+        if driver and mults:
+            scenarios: list[Scenario] = []
+            for mult in mults[:5]:
+                params = dict(defaults)
+                params.update(overrides)
+                params[driver] = defaults[driver] * mult  # multiplier wins for driver
+                scenarios.append(Scenario(name=f"{driver}_x{mult:g}", params=params))
+            return scenarios
+        if overrides:
             params = dict(defaults)
-            params[driver] = defaults[driver] * mult
-            scenarios.append(Scenario(name=f"{driver}_x{mult:g}", params=params))
-        return scenarios
+            params.update(overrides)
+            return [Scenario(name="custom", params=params)]
+        return [Scenario(name="base", params=dict(defaults))]
 
     def analyze(
         self,
@@ -68,6 +96,7 @@ class HeuristicPlanner(Planner):
         model: ModelSpec | None,
         simulation: dict[str, Any] | None,
         past_references: list[dict[str, Any]],
+        history: list[dict[str, Any]],
     ) -> str:
         parts: list[str] = []
         if simulation and simulation.get("scenarios"):

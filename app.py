@@ -114,10 +114,15 @@ def main() -> None:
     if not user_input:
         return
 
+    # Prior turns (excluding the input we're about to add) give the LLM
+    # multi-turn context for follow-up questions.
+    history = [{"role": t.role, "content": t.content} for t in st.session_state.history]
     _append("user", user_input)
     try:
         with st.spinner("解析中..."):
-            outcome = runner.start(session_id, user_input, user_id=user.user_id)
+            outcome = runner.start(
+                session_id, user_input, user_id=user.user_id, history=history
+            )
     except Exception as e:
         _append("assistant", f"エラーが発生しました: {e}")
         st.rerun()

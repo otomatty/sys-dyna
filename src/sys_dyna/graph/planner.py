@@ -21,17 +21,26 @@ class Planner(Protocol):
         """Return one of: 'simulate', 'past_reference', 'general'."""
         ...
 
-    def select_model(self, user_text: str, catalog: list[dict[str, str]]) -> str | None:
+    def select_model(
+        self,
+        user_text: str,
+        catalog: list[dict[str, str]],
+        history: list[dict[str, Any]],
+    ) -> str | None:
         """Pick a catalog model_id for the request, or None if none fits."""
         ...
 
     def extract_scenarios(
-        self, user_text: str, model: ModelSpec
+        self,
+        user_text: str,
+        model: ModelSpec,
+        history: list[dict[str, Any]],
     ) -> list[Scenario]:
         """Turn the natural-language request into one or more parameter sets.
 
         Implementations should start from ``model.default_params()`` and only
-        override what the user asked to change.
+        override what the user asked to change. ``history`` lets follow-up
+        requests ("then make churn 0.1") build on the previous turn.
         """
         ...
 
@@ -41,6 +50,7 @@ class Planner(Protocol):
         model: ModelSpec | None,
         simulation: dict[str, Any] | None,
         past_references: list[dict[str, Any]],
+        history: list[dict[str, Any]],
     ) -> str:
         """Produce the final natural-language analysis for the user."""
         ...

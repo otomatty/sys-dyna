@@ -18,19 +18,21 @@ _INTENT_PROMPT = """\
 ユーザーの発言を次のいずれかに分類し、ラベルのみを1語で出力してください。
 
 - simulate: シミュレーションの実行や「もし〜したら」の予測を求めている
+  (直前にシミュレーションを行った後の「ではXを〜に変えたら」等の追問も含む)
 - past_reference: 過去・以前の分析事例の参照だけを求めている
 - general: 上記以外の一般的な質問・雑談
-
+{history}
 ユーザー発言: {user_text}
 ラベル:"""
 
 _SELECT_PROMPT = """\
 ユーザーの要求に最も適したシミュレーションモデルを1つ選びます。
 候補モデル(JSON): {catalog}
-
+{history}
 ユーザー発言: {user_text}
 
-最も適切な model_id だけを出力してください。該当が無ければ none と出力してください。
+最も適切な model_id だけを出力してください。直前の会話で使ったモデルを継続する場合は
+そのモデルを選びます。該当が無ければ none と出力してください。
 model_id:"""
 
 _EXTRACT_PROMPT = """\
@@ -38,10 +40,11 @@ _EXTRACT_PROMPT = """\
 モデル: {model_name}
 調整可能なパラメータ(name: 既定値, 説明):
 {param_lines}
-
+{history}
 ユーザー発言: {user_text}
 
 次の JSON のみを出力してください。複数シナリオの比較要求があれば複数要素にします。
+追問の場合は直前のシナリオを踏まえ、変更点だけ反映してください。
 変更しないパラメータは省略可(既定値が使われます)。
 {{"scenarios": [{{"name": "シナリオ名", "params": {{"パラメータ名": 数値}}}}]}}
 JSON:"""
@@ -49,13 +52,32 @@ JSON:"""
 _ANALYZE_PROMPT = """\
 あなたはシステムダイナミクス分析の専門家です。以下の数値シミュレーション結果を解釈し、
 日本語で簡潔に説明してください。要因・ボトルネック・示唆に触れ、断定しすぎないこと。
-
+{history}
 ユーザーの質問: {user_text}
 モデル: {model_name}
 シミュレーション結果(JSON): {simulation}
 過去の参考分析(JSON): {past}
 
 回答:"""
+
+
+def format_history(history: list[dict[str, Any]], max_turns: int = 6) -> str:
+    """Render recent conversation as a compact block for prompt injection.
+
+    Returns "" when there is no history so single-turn prompts are unchanged.
+    """
+    if not history:
+        return ""
+    recent = history[-max_turns:]
+    lines = []
+    for m in recent:
+        role = "ユーザー" if m.get("role") == "user" else "アシスタント"
+        content = str(m.get("content", "")).strip().replace("\n", " ")
+        if content:
+            lines.append(f"{role}: {content[:300]}")
+    if not lines:
+        return ""
+    return "\n直近の会話:\n" + "\n".join(lines) + "\n"
 
 
 # --------------------------------------------------------------------------
@@ -202,23 +224,42 @@ class GeminiPlanner(Planner):
         return content if isinstance(content, str) else str(content)
 
     def classify_intent(self, user_text: str, history: list[dict[str, Any]]) -> str:
-        return parse_intent(self._ask(_INTENT_PROMPT.format(user_text=user_text)))
+        return parse_intent(
+            self._ask(
+                _INTENT_PROMPT.format(
+                    user_text=user_text, history=format_history(history)
+                )
+            )
+        )
 
-    def select_model(self, user_text: str, catalog: list[dict[str, str]]) -> str | None:
+    def select_model(
+        self,
+        user_text: str,
+        catalog: list[dict[str, str]],
+        history: list[dict[str, Any]],
+    ) -> str | None:
         valid = {c["model_id"] for c in catalog}
         raw = self._ask(
             _SELECT_PROMPT.format(
-                catalog=json.dumps(catalog, ensure_ascii=False), user_text=user_text
+                catalog=json.dumps(catalog, ensure_ascii=False),
+                user_text=user_text,
+                history=format_history(history),
             )
         )
         return parse_model_id(raw, valid)
 
-    def extract_scenarios(self, user_text: str, model: ModelSpec) -> list[Scenario]:
+    def extract_scenarios(
+        self,
+        user_text: str,
+        model: ModelSpec,
+        history: list[dict[str, Any]],
+    ) -> list[Scenario]:
         raw = self._ask(
             _EXTRACT_PROMPT.format(
                 model_name=model.name,
                 param_lines=_param_lines(model),
                 user_text=user_text,
+                history=format_history(history),
             )
         )
         return parse_scenarios(raw, model, self._max_scenarios)
@@ -229,6 +270,7 @@ class GeminiPlanner(Planner):
         model: ModelSpec | None,
         simulation: dict[str, Any] | None,
         past_references: list[dict[str, Any]],
+        history: list[dict[str, Any]],
     ) -> str:
         return self._ask(
             _ANALYZE_PROMPT.format(
@@ -236,5 +278,6 @@ class GeminiPlanner(Planner):
                 model_name=model.name if model else "(なし)",
                 simulation=json.dumps(simulation, ensure_ascii=False, default=str),
                 past=json.dumps(past_references, ensure_ascii=False, default=str),
+                history=format_history(history),
             )
         ).strip()

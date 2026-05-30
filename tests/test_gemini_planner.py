@@ -106,8 +106,10 @@ def test_planner_with_injected_chat_model() -> None:
     planner = GeminiPlanner(chat_model=chat)
 
     assert planner.classify_intent("広告を増やしたら?", []) == "simulate"
-    assert planner.select_model("...", [{"model_id": "sales_growth", "name": "", "description": ""}]) == "sales_growth"
-    scenarios = planner.extract_scenarios("広告2倍", SPEC)
+    assert planner.select_model(
+        "...", [{"model_id": "sales_growth", "name": "", "description": ""}], []
+    ) == "sales_growth"
+    scenarios = planner.extract_scenarios("広告2倍", SPEC, [])
     assert scenarios[0].params["ad_spend"] == 200.0
-    text = planner.analyze("?", SPEC, {"scenarios": []}, [])
+    text = planner.analyze("?", SPEC, {"scenarios": []}, [], [])
     assert "売上" in text

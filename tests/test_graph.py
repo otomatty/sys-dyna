@@ -26,16 +26,16 @@ class FakePlanner:
     def classify_intent(self, user_text: str, history: list[dict[str, Any]]) -> str:
         return self._intent
 
-    def select_model(self, user_text: str, catalog: list[dict[str, str]]) -> str | None:
+    def select_model(self, user_text, catalog, history) -> str | None:
         return "sales_growth"
 
-    def extract_scenarios(self, user_text: str, model: ModelSpec) -> list[Scenario]:
+    def extract_scenarios(self, user_text, model: ModelSpec, history) -> list[Scenario]:
         base = model.default_params()
         return [Scenario(name="ad_x1.5", params={**base, "ad_spend": 150.0})]
 
-    def analyze(self, user_text, model, simulation, past_references) -> str:
+    def analyze(self, user_text, model, simulation, past_references, history) -> str:
         self.analyze_calls.append(
-            {"simulation": simulation, "past": past_references}
+            {"simulation": simulation, "past": past_references, "history": history}
         )
         if simulation is None:
             return "no simulation"

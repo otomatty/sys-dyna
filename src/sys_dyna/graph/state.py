@@ -23,6 +23,10 @@ class AgentState(TypedDict, total=False):
     session_id: str
     user_id: str
     user_text: str
+    # Prior conversation as [{"role": "user"|"assistant", "content": str}], passed
+    # in at the start of each turn so the LLM has multi-turn (follow-up) context.
+    # Plain dicts (not LangChain BaseMessage) keep the state checkpoint JSON-safe.
+    messages: list[dict[str, Any]]
 
     intent: Intent
     selected_model_id: str | None

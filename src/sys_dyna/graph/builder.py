@@ -51,7 +51,7 @@ class _Nodes:
     # -- routing -----------------------------------------------------------
     def classify_intent(self, state: AgentState) -> dict[str, Any]:
         intent = self.d.planner.classify_intent(
-            state["user_text"], state.get("past_references") or []
+            state["user_text"], state.get("messages") or []
         )
         if intent not in ("simulate", "past_reference", "general"):
             intent = "general"
@@ -69,7 +69,9 @@ class _Nodes:
     def select_model(self, state: AgentState) -> dict[str, Any]:
         from ..simulation import catalog_summary
 
-        model_id = self.d.planner.select_model(state["user_text"], catalog_summary())
+        model_id = self.d.planner.select_model(
+            state["user_text"], catalog_summary(), state.get("messages") or []
+        )
         if model_id is None or self.d.model_lookup(model_id) is None:
             return {"selected_model_id": None, "error": "no_matching_model"}
         return {"selected_model_id": model_id, "error": None}
@@ -79,7 +81,9 @@ class _Nodes:
 
     def extract_params(self, state: AgentState) -> dict[str, Any]:
         spec = self.d.model_lookup(state["selected_model_id"])
-        scenarios = self.d.planner.extract_scenarios(state["user_text"], spec)
+        scenarios = self.d.planner.extract_scenarios(
+            state["user_text"], spec, state.get("messages") or []
+        )
         if not scenarios:
             scenarios = [Scenario(name="base", params=spec.default_params())]
         return {
@@ -143,6 +147,7 @@ class _Nodes:
             spec,
             state.get("simulation"),
             state.get("past_references") or [],
+            state.get("messages") or [],
         )
         return {"analysis": text}
 

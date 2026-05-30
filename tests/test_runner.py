@@ -79,9 +79,35 @@ def test_cancel_resumes_cleanly_without_simulation() -> None:
 
 def test_heuristic_multiple_multipliers_make_scenarios() -> None:
     planner = HeuristicPlanner()
-    scenarios = planner.extract_scenarios("広告費を1.2倍と1.5倍で比較", SPEC)
+    scenarios = planner.extract_scenarios("広告費を1.2倍と1.5倍で比較", SPEC, [])
     names = [s.params["ad_spend"] for s in scenarios]
     assert 120.0 in names and 150.0 in names
+
+
+def test_heuristic_followup_param_override_uses_history() -> None:
+    planner = HeuristicPlanner()
+    history = [
+        {"role": "user", "content": "広告費を1.5倍にしたら売上は?"},
+        {"role": "assistant", "content": "シミュレーション結果（Sales）..."},
+    ]
+    # A bare numeric tweak after a prior exchange is treated as simulate.
+    assert planner.classify_intent("churn_rate を 0.1 に", history) == "simulate"
+    scenarios = planner.extract_scenarios("churn_rate を 0.1 に", SPEC, history)
+    assert scenarios[0].params["churn_rate"] == 0.1
+    # Untouched params keep defaults.
+    assert scenarios[0].params["ad_spend"] == 100.0
+
+
+def test_runner_threads_history_into_turn() -> None:
+    runner = _runner()
+    history = [
+        {"role": "user", "content": "広告費を1.5倍にしたら?"},
+        {"role": "assistant", "content": "売上は増加します。"},
+    ]
+    out = runner.start("sess-hist", "解約率を0.1にしたら?", history=history)
+    # Follow-up with history -> classified as simulate -> awaits confirmation.
+    assert out.status == "awaiting_confirmation"
+    assert out.confirm["scenarios"][0]["params"]["churn_rate"] == 0.1
 
 
 def test_heuristic_classify_intent() -> None:

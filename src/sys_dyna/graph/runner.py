@@ -38,9 +38,20 @@ class TurnRunner:
     def __init__(self, graph: Any) -> None:
         self._graph = graph
 
-    def start(self, session_id: str, user_text: str, user_id: str = "") -> TurnOutcome:
+    def start(
+        self,
+        session_id: str,
+        user_text: str,
+        user_id: str = "",
+        history: list[dict[str, Any]] | None = None,
+    ) -> TurnOutcome:
         result = self._graph.invoke(
-            {"user_text": user_text, "session_id": session_id, "user_id": user_id},
+            {
+                "user_text": user_text,
+                "session_id": session_id,
+                "user_id": user_id,
+                "messages": list(history or []),
+            },
             self._config(session_id),
         )
         return self._to_outcome(session_id, result)
