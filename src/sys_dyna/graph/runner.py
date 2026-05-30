@@ -51,6 +51,18 @@ class TurnRunner:
                 "session_id": session_id,
                 "user_id": user_id,
                 "messages": list(history or []),
+                # The checkpointer reuses one thread per session and merges this
+                # input into the existing state, so explicitly reset per-turn
+                # fields — otherwise a prior turn's simulation/model leaks into a
+                # later general or past-reference question.
+                "intent": None,
+                "selected_model_id": None,
+                "scenarios": [],
+                "confirmed": False,
+                "simulation": None,
+                "past_references": [],
+                "analysis": None,
+                "error": None,
             },
             self._config(session_id),
         )

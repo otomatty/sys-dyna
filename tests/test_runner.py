@@ -78,6 +78,19 @@ def test_cancel_resumes_cleanly_without_simulation() -> None:
     assert again.status == "completed"
 
 
+def test_new_turn_does_not_inherit_previous_state() -> None:
+    """A later turn on the same session must not carry a prior simulation/model."""
+    runner = _runner()
+    runner.start("sess-reset", "広告費を1.5倍にしたら?")
+    done = runner.resume("sess-reset", "approve")
+    assert done.simulation is not None and done.selected_model_id == "sales_growth"
+
+    out = runner.start("sess-reset", "ありがとう")
+    assert out.status == "completed"
+    assert out.simulation is None
+    assert out.selected_model_id is None
+
+
 def test_heuristic_multiple_multipliers_make_scenarios() -> None:
     planner = HeuristicPlanner()
     scenarios = planner.extract_scenarios("広告費を1.2倍と1.5倍で比較", SPEC, [])
