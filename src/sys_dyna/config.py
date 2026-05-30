@@ -26,9 +26,22 @@ class Settings(BaseSettings):
 
     model_name: str = "gemini-3.1-pro-preview-customtools"
 
+    # --- Gemini (Google AI Studio) ---
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-3.5-flash"
+    gemini_temperature: float = 0.2
+
+    # --- Supabase ---
+    supabase_url: str | None = None
+    supabase_anon_key: str | None = None
+    supabase_service_role_key: str | None = None
+    # Postgres connection string for the LangGraph checkpointer (HITL resume).
+    checkpoint_db_url: str | None = None
+
     max_tool_calls: int = 10
     per_tool_timeout_sec: float = 10.0
     turn_timeout_sec: float = 60.0
+    max_scenarios: int = 5
 
 
 def _validate(s: Settings) -> Settings:

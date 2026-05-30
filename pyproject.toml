@@ -5,13 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sys-dyna"
 version = "0.1.0"
-description = "System Dynamics x LLM internal analysis tool with Agentic Search over past sessions"
+description = "System Dynamics x LLM internal analysis tool: PySD simulation + Gemini analysis via LangGraph"
 requires-python = ">=3.10"
 dependencies = [
-    "streamlit>=1.30",
+    "streamlit>=1.50",
     "pydantic>=2.5",
     "pydantic-settings>=2.1",
     "python-dotenv>=1.0",
+    "altair>=5.0",
+    "pysd>=3.14",
+    "langgraph>=0.4",
+    "langchain-core>=0.3",
+    "langchain-google-genai>=2.0",
+    "supabase>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -19,9 +25,20 @@ dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
 ]
+postgres = [
+    "langgraph-checkpoint-postgres>=2.0",
+    "psycopg[binary]>=3.1",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"sys_dyna.simulation" = [
+    "catalog_models/*.xmile",
+    "catalog_models/*.mdl",
+    "catalog_models/*.py",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

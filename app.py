@@ -1,143 +1,159 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 
 import streamlit as st
 
 from sys_dyna.auth import get_current_user
 from sys_dyna.config import get_settings
-from sys_dyna.db.connection import get_connection, init_schema
-from sys_dyna.llm.client import LLMMessage
-from sys_dyna.llm.mock_client import MockGeminiClient
-from sys_dyna.orchestrator import AgenticSearchOrchestrator
-from sys_dyna.repository import sessions as sessions_repo
-from sys_dyna.repository import users as users_repo
-from sys_dyna.repository.sessions import ChatMessage
-from sys_dyna.repository.users import UserRow
-from sys_dyna.tools import build_default_tools
-from sys_dyna.ui.chat import render_history
-from sys_dyna.ui.sidebar import render_sidebar
+from sys_dyna.graph import build_planner, build_runner
+from sys_dyna.simulation import get_model
+from sys_dyna.ui.charts import render_simulation
+from sys_dyna.ui.param_confirm import render_param_confirm
 
 
-st.set_page_config(page_title="SD x LLM 社内分析ツール", page_icon=None, layout="wide")
+st.set_page_config(page_title="SD x LLM 社内分析ツール", layout="wide")
+
+
+@dataclass
+class ChatTurn:
+    role: str
+    content: str
+    simulation: dict | None = None
+
+
+@st.cache_resource(show_spinner=False)
+def _get_runner():
+    """Build the LangGraph runner once per process.
+
+    Uses an in-memory checkpointer so the HITL interrupt can resume across
+    Streamlit reruns within a process. In production this is swapped for the
+    Postgres (Supabase) checkpointer — see docs/design_v2.md §5.2.
+    """
+    from langgraph.checkpoint.memory import MemorySaver
+
+    settings = get_settings()
+    planner = build_planner(
+        gemini_api_key=settings.gemini_api_key,
+        gemini_model=settings.gemini_model,
+        temperature=settings.gemini_temperature,
+        max_scenarios=settings.max_scenarios,
+    )
+    return build_runner(planner, checkpointer=MemorySaver())
 
 
 def _bootstrap() -> None:
-    """Run on every script invocation; idempotent."""
-    settings = get_settings()
-    init_schema(settings.db_path)
-
-    user = get_current_user()
-    with get_connection(settings.db_path) as conn:
-        users_repo.upsert(
-            conn,
-            UserRow(
-                user_id=user.user_id,
-                display_name=user.display_name,
-                department=user.department,
-            ),
-        )
-
-        if "session_id" not in st.session_state:
-            session_id = str(uuid.uuid4())
-            sessions_repo.create_empty(
-                conn,
-                session_id=session_id,
-                user_id=user.user_id,
-                model_name=settings.model_name,
-            )
-            st.session_state.session_id = session_id
-            st.session_state.chat_history = []  # list[ChatMessage]
-            st.session_state.invocations_by_turn = []  # list[list[ToolInvocation]]
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4())
+        st.session_state.history = []  # list[ChatTurn]
+        st.session_state.pending = None  # TurnOutcome awaiting confirmation
+        st.session_state.confirm_seq = 0  # unique key namespace per confirmation
 
 
-def _to_llm_history(history: list[ChatMessage]) -> list[LLMMessage]:
-    return [
-        LLMMessage(role=m.role, content=m.content)  # type: ignore[arg-type]
-        for m in history
-        if m.role in ("user", "assistant")
-    ]
+def _render_sidebar(user, settings) -> None:
+    with st.sidebar:
+        st.subheader("セッション情報")
+        st.text(f"ユーザー: {user.display_name}")
+        if user.department:
+            st.caption(f"部署: {user.department}")
+        st.code(st.session_state.session_id, language="text")
+        mode = "Gemini" if settings.gemini_api_key else "オフライン(ヒューリスティック)"
+        st.caption(f"分析エンジン: {mode} / {settings.gemini_model}")
+
+
+def _append(role: str, content: str, simulation: dict | None = None) -> None:
+    st.session_state.history.append(ChatTurn(role, content, simulation))
+
+
+def _last_simulation_params(history: list[ChatTurn]) -> dict | None:
+    """First scenario's params from the most recent simulation turn, if any."""
+    for turn in reversed(history):
+        if turn.simulation and turn.simulation.get("scenarios"):
+            return dict(turn.simulation["scenarios"][0].get("params") or {})
+    return None
+
+
+def _handle_completed(outcome) -> None:
+    _append("assistant", outcome.analysis or "(分析結果がありません)", outcome.simulation)
 
 
 def main() -> None:
     _bootstrap()
-
     settings = get_settings()
     user = get_current_user()
-    session_id: str = st.session_state.session_id
-    history: list[ChatMessage] = st.session_state.chat_history
-    invocations_by_turn = st.session_state.invocations_by_turn
+    runner = _get_runner()
+    session_id = st.session_state.session_id
 
-    render_sidebar(
-        user=user,
-        session_id=session_id,
-        model_name=settings.model_name,
-        invocations_by_turn=invocations_by_turn,
-    )
+    _render_sidebar(user, settings)
 
     st.title("システムダイナミクス × LLM 社内分析ツール")
-    st.caption(
-        "過去セッションを Agentic Search で参照しながら回答します。質問を入力してください。"
-    )
+    st.caption("シミュレーションを実行し、結果を Gemini が分析・説明します。")
 
-    render_history(history)
+    for idx, turn in enumerate(st.session_state.history):
+        with st.chat_message(turn.role):
+            st.markdown(turn.content)
+            if turn.simulation:
+                render_simulation(turn.simulation, key_prefix=f"sim_{idx}")
 
-    user_input = st.chat_input("質問を入力 (例: 広告費を1.5倍にしたら売上はどうなる? 過去に似た分析あった?)")
+    # --- HITL: a pending confirmation takes priority over new input ---
+    pending = st.session_state.pending
+    if pending is not None:
+        model = get_model(pending.selected_model_id) if pending.selected_model_id else None
+        decision = render_param_confirm(
+            pending.confirm, model, key_prefix=f"confirm_{st.session_state.confirm_seq}"
+        )
+        if decision is not None:
+            cancelled = not decision.get("scenarios")
+            # Always resume so the LangGraph thread leaves the interrupted state,
+            # even on cancel — otherwise the next input on this session fails.
+            try:
+                with st.spinner("処理中..." if cancelled else "シミュレーション実行中..."):
+                    outcome = runner.resume(session_id, decision)
+            except Exception as e:
+                # Keep `pending` so the confirmation form survives a failed resume.
+                _append("assistant", f"エラーが発生しました: {e}")
+                st.rerun()
+                return
+            st.session_state.pending = None
+            if cancelled:
+                _append("assistant", "シミュレーションをキャンセルしました。")
+            else:
+                _handle_completed(outcome)
+            st.rerun()
+        return
+
+    user_input = st.chat_input("質問を入力 (例: 広告費を1.5倍にしたら売上はどうなる?)")
     if not user_input:
         return
 
-    with st.chat_message("user"):
-        st.markdown(user_input)
-
-    history.append(ChatMessage(role="user", content=user_input))
-
-    tools = build_default_tools(settings.db_path)
-    orchestrator = AgenticSearchOrchestrator(
-        llm=MockGeminiClient(model_name=settings.model_name),
-        tools=tools,
-    )
-
-    with st.spinner("Agentic Search 実行中..."):
-        result = orchestrator.run_turn(
-            session_id=session_id,
-            user_text=user_input,
-            history=_to_llm_history(history[:-1]),
-        )
-
-    history.append(ChatMessage(role="assistant", content=result.text))
-    invocations_by_turn.append(result.invocations)
-
-    now = _now_iso()
-    with get_connection(settings.db_path) as conn:
-        # upsert preserves created_at via ON CONFLICT DO UPDATE; passing `now`
-        # for created_at is only used on first insert.
-        sessions_repo.upsert(
-            conn,
-            sessions_repo.SessionRecord(
-                session_id=session_id,
+    # Prior turns (excluding the input we're about to add) give the LLM
+    # multi-turn context for follow-up questions.
+    history = [{"role": t.role, "content": t.content} for t in st.session_state.history]
+    # The most recent simulation's first scenario seeds follow-up edits so an
+    # unchanged parameter keeps its previous value rather than reverting.
+    base_params = _last_simulation_params(st.session_state.history)
+    _append("user", user_input)
+    try:
+        with st.spinner("解析中..."):
+            outcome = runner.start(
+                session_id,
+                user_input,
                 user_id=user.user_id,
-                created_at=now,
-                updated_at=now,
-                model_name=settings.model_name,
-                chat_log=list(history),
-                final_state=None,
-            ),
-        )
+                history=history,
+                base_params=base_params,
+            )
+    except Exception as e:
+        _append("assistant", f"エラーが発生しました: {e}")
+        st.rerun()
+        return
 
-    with st.chat_message("assistant"):
-        st.markdown(result.text)
-        if result.hit_loop_limit:
-            st.warning("ツール呼び出しの上限に達したため、現在の情報で応答しました。")
-        if result.hit_turn_timeout:
-            st.warning("ターンのタイムアウトに達しました。")
-        if result.invocations:
-            st.caption(f"このターンで {len(result.invocations)} 件のツール呼び出しを実行しました。")
-
-
-def _now_iso() -> str:
-    from datetime import datetime, timezone
-
-    return datetime.now(timezone.utc).isoformat()
+    if outcome.status == "awaiting_confirmation":
+        st.session_state.confirm_seq += 1  # fresh key namespace for this form
+        st.session_state.pending = outcome
+    else:
+        _handle_completed(outcome)
+    st.rerun()
 
 
 if __name__ == "__main__":
