@@ -68,7 +68,8 @@ def test_resume_with_edited_parameters() -> None:
 def test_cancel_resumes_cleanly_without_simulation() -> None:
     """Empty scenarios (cancellation) must complete, not run or hang the thread."""
     runner = _runner()
-    runner.start("sess-cancel", "広告費を1.5倍にしたら?")
+    started = runner.start("sess-cancel", "広告費を1.5倍にしたら?")
+    assert started.status == "awaiting_confirmation"
     out = runner.resume("sess-cancel", {"scenarios": []})
     assert out.status == "completed"
     assert out.simulation is None

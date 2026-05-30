@@ -93,7 +93,6 @@ def main() -> None:
         model = get_model(pending.selected_model_id) if pending.selected_model_id else None
         decision = render_param_confirm(pending.confirm, model)
         if decision is not None:
-            st.session_state.pending = None
             cancelled = not decision.get("scenarios")
             # Always resume so the LangGraph thread leaves the interrupted state,
             # even on cancel — otherwise the next input on this session fails.
@@ -101,8 +100,11 @@ def main() -> None:
                 with st.spinner("処理中..." if cancelled else "シミュレーション実行中..."):
                     outcome = runner.resume(session_id, decision)
             except Exception as e:
+                # Keep `pending` so the confirmation form survives a failed resume.
                 _append("assistant", f"エラーが発生しました: {e}")
                 st.rerun()
+                return
+            st.session_state.pending = None
             if cancelled:
                 _append("assistant", "シミュレーションをキャンセルしました。")
             else:

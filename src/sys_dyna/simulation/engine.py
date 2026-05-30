@@ -14,8 +14,21 @@ logger = logging.getLogger(__name__)
 
 # A cached PySD model is a single stateful instance; ``model.run`` mutates it
 # and is not safe to call concurrently. Engines are shared across sessions via
-# Streamlit's @st.cache_resource, so serialise runs with a process-wide lock.
-_MODEL_RUN_LOCK = threading.Lock()
+# Streamlit's @st.cache_resource. Use a per-model lock (keyed like the model
+# cache) so the same instance is serialised while different models still run in
+# parallel. The key set is bounded by the model cache (lru_cache maxsize=32).
+_MODEL_LOCKS_GUARD = threading.Lock()
+_MODEL_RUN_LOCKS: dict[tuple[str, float], threading.Lock] = {}
+
+
+def _get_model_run_lock(path: str, mtime: float) -> threading.Lock:
+    key = (path, mtime)
+    with _MODEL_LOCKS_GUARD:
+        lock = _MODEL_RUN_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _MODEL_RUN_LOCKS[key] = lock
+        return lock
 
 # Bookkeeping columns PySD always emits; never returned as model variables.
 _PYSD_INTERNAL_COLUMNS = {
@@ -98,11 +111,12 @@ class PySDEngine:
             raise SimulationError("model_not_found", f"model file not found: {ref.path}") from e
 
         model = _cached_model(ref.path, mtime)
+        run_lock = _get_model_run_lock(ref.path, mtime)
         cols = list(return_columns) if return_columns else self._default_return_columns
 
         run = SimulationRun(model_id=ref.model_id)
         for scenario in scenarios:
-            result = self._run_one(model, scenario, cols)
+            result = self._run_one(model, scenario, cols, run_lock)
             run.scenarios.append(result)
         return run
 
@@ -111,6 +125,7 @@ class PySDEngine:
         model: Any,
         scenario: Scenario,
         return_columns: list[str] | None,
+        run_lock: threading.Lock,
     ) -> ScenarioResult:
         params = dict(scenario.params)
         kwargs: dict[str, Any] = {}
@@ -122,9 +137,9 @@ class PySDEngine:
         try:
             # ``reload`` resets stocks to their initial values so scenarios run
             # independently even though they share one cached model object.
-            # The lock guards that shared, mutable instance against concurrent
-            # runs from other sessions.
-            with _MODEL_RUN_LOCK:
+            # The per-model lock guards that shared, mutable instance against
+            # concurrent runs from other sessions.
+            with run_lock:
                 frame = model.run(reload=True, **kwargs)
         except KeyError as e:
             raise SimulationError(
