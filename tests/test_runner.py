@@ -50,6 +50,18 @@ def test_resume_completes_with_analysis_and_simulation() -> None:
     assert out.analysis and "シミュレーション結果" in out.analysis
 
 
+def test_manual_edit_out_of_bounds_is_clamped_before_running() -> None:
+    """Edited/resumed params are clamped to ParamSpec bounds (churn_rate max=1.0)."""
+    runner = _runner()
+    runner.start("sess-clamp", "広告費を1.5倍にしたら?")
+    out = runner.resume(
+        "sess-clamp",
+        {"scenarios": [{"name": "edited", "params": {"ad_spend": 100.0, "churn_rate": 5.0}}]},
+    )
+    assert out.status == "completed"
+    assert out.simulation["scenarios"][0]["params"]["churn_rate"] == 1.0
+
+
 def test_general_intent_completes_without_pause() -> None:
     runner = _runner()
     out = runner.start("sess-3", "こんにちは")

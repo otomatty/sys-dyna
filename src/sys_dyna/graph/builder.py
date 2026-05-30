@@ -123,11 +123,22 @@ class _Nodes:
     def run_simulation(self, state: AgentState) -> dict[str, Any]:
         spec = self.d.model_lookup(state["selected_model_id"])
         scenarios = [
-            Scenario(name=s["name"], params=dict(s["params"]))
+            Scenario(name=s["name"], params=self._clamp_params(spec, s["params"]))
             for s in state.get("scenarios", [])
         ]
         run = self.d.engine.run_scenarios(spec.ref, scenarios)
         return {"simulation": run.to_payload()}
+
+    @staticmethod
+    def _clamp_params(spec: Any, params: dict[str, Any]) -> dict[str, float]:
+        # Authoritative bound enforcement: manual HITL edits (or a programmatic
+        # resume) reach here unclamped, unlike planner output. Keep simulation
+        # inputs within each ParamSpec's range so we never run an invalid model.
+        clamped: dict[str, float] = {}
+        for name, value in params.items():
+            pspec = spec.param(name)
+            clamped[name] = pspec.clamp(float(value)) if pspec else float(value)
+        return clamped
 
     def persist(self, state: AgentState) -> dict[str, Any]:
         try:

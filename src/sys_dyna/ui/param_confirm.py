@@ -20,7 +20,7 @@ def render_param_confirm(
     previous turn's edited values (or raise) instead of the new proposal.
     """
     proposed = confirm.get("scenarios", [])
-    labels = {p.name: p.label for p in (model.params if model else [])}
+    specs = {p.name: p for p in (model.params if model else [])}
 
     st.info("シミュレーションを実行する前にパラメータをご確認ください。必要なら修正できます。")
     with st.form(f"{key_prefix}_form"):
@@ -31,11 +31,17 @@ def render_param_confirm(
             new_params: dict[str, float] = {}
             cols = st.columns(min(3, max(1, len(params))))
             for j, (key, value) in enumerate(params.items()):
-                label = labels.get(key, key)
+                spec = specs.get(key)
+                label = spec.label if spec else key
+                # Bound the widget to the ParamSpec range; clamp the proposed
+                # value first so it never falls outside [min_value, max_value].
+                value = spec.clamp(float(value)) if spec else float(value)
                 with cols[j % len(cols)]:
                     new_params[key] = st.number_input(
                         label,
-                        value=float(value),
+                        value=value,
+                        min_value=(spec.min if spec else None),
+                        max_value=(spec.max if spec else None),
                         key=f"{key_prefix}_p_{i}_{key}",
                         format="%.4f",
                     )
