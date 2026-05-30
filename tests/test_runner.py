@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+import pytest
+
+from sys_dyna.graph import build_planner, build_runner
+from sys_dyna.graph.heuristic_planner import HeuristicPlanner
+from sys_dyna.simulation import get_model
+
+
+pytest.importorskip("pysd")
+pytest.importorskip("langgraph")
+
+from langgraph.checkpoint.memory import MemorySaver  # noqa: E402
+
+
+SPEC = get_model("sales_growth")
+
+
+def _runner(planner=None):
+    return build_runner(
+        planner or HeuristicPlanner(), checkpointer=MemorySaver()
+    )
+
+
+def test_build_planner_selects_offline_without_key() -> None:
+    assert isinstance(build_planner(None), HeuristicPlanner)
+
+
+def test_build_planner_selects_gemini_with_key() -> None:
+    p = build_planner("fake-key")
+    assert p.__class__.__name__ == "GeminiPlanner"
+
+
+def test_start_pauses_for_confirmation_on_simulate() -> None:
+    runner = _runner()
+    out = runner.start("sess-1", "広告費を1.5倍にしたら売上はどうなる?")
+    assert out.status == "awaiting_confirmation"
+    assert out.confirm is not None
+    scenarios = out.confirm["scenarios"]
+    # "1.5倍" -> ad_spend scaled 100 -> 150.
+    assert scenarios[0]["params"]["ad_spend"] == 150.0
+
+
+def test_resume_completes_with_analysis_and_simulation() -> None:
+    runner = _runner()
+    runner.start("sess-2", "広告費を2倍にしたら売上は?")
+    out = runner.resume("sess-2", "approve")
+    assert out.status == "completed"
+    assert out.simulation is not None
+    assert out.analysis and "シミュレーション結果" in out.analysis
+
+
+def test_general_intent_completes_without_pause() -> None:
+    runner = _runner()
+    out = runner.start("sess-3", "こんにちは")
+    assert out.status == "completed"
+    assert out.simulation is None
+
+
+def test_resume_with_edited_parameters() -> None:
+    runner = _runner()
+    runner.start("sess-4", "広告費を1.5倍にしたら?")
+    edited = {"scenarios": [{"name": "manual", "params": {"ad_spend": 250.0}}]}
+    out = runner.resume("sess-4", edited)
+    assert out.simulation["scenarios"][0]["params"]["ad_spend"] == 250.0
+
+
+def test_heuristic_multiple_multipliers_make_scenarios() -> None:
+    planner = HeuristicPlanner()
+    scenarios = planner.extract_scenarios("広告費を1.2倍と1.5倍で比較", SPEC)
+    names = [s.params["ad_spend"] for s in scenarios]
+    assert 120.0 in names and 150.0 in names
+
+
+def test_heuristic_classify_intent() -> None:
+    p = HeuristicPlanner()
+    assert p.classify_intent("広告を増やしたらどうなる?", []) == "simulate"
+    assert p.classify_intent("過去に似た事例ある?", []) == "past_reference"
+    assert p.classify_intent("ありがとう", []) == "general"

@@ -8,10 +8,11 @@ version = "0.1.0"
 description = "System Dynamics x LLM internal analysis tool: PySD simulation + Gemini analysis via LangGraph"
 requires-python = ">=3.10"
 dependencies = [
-    "streamlit>=1.30",
+    "streamlit>=1.40",
     "pydantic>=2.5",
     "pydantic-settings>=2.1",
     "python-dotenv>=1.0",
+    "altair>=5.0",
     "pysd>=3.14",
     "langgraph>=0.2",
     "langchain-core>=0.3",
