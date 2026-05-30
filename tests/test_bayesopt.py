@@ -124,5 +124,8 @@ def test_clamp_collapsed_range_stays_exactly_on_bound() -> None:
         seed=0,
         clamp=lambda name, v: min(v, 1.0),
     )
+    # low == high == 1.0 makes the parameter a constant pinned on the bound, so
+    # every trial — and the reported best — must be exactly 1.0, not merely <=.
     assert result.best_params["x"] == pytest.approx(1.0)
-    assert all(h["params"]["x"] <= 1.0 for h in result.history)
+    assert all(h["params"]["x"] == pytest.approx(1.0) for h in result.history)
+    assert result.best_value == pytest.approx(1.0)

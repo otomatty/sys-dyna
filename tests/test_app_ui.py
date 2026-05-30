@@ -72,6 +72,11 @@ def test_optimize_confirm_blocks_invalid_bounds() -> None:
     # The error is shown; nothing is run and the turn is not falsely cancelled.
     assert any("high は low より大きく" in e.value for e in at.error)
     assert not any("キャンセル" in m.value for m in at.markdown)
+    # The confirm form persists (submission was blocked, not resumed) and no
+    # analysis result/summary was produced. ("最適なパラメータは" is unique to a
+    # completed optimization summary; the user's prompt text is not a match.)
+    assert any(b.label == "この設定で実行" for b in at.button)
+    assert not any("最適なパラメータは" in m.value for m in at.markdown)
 
 
 def test_multiple_simulations_in_history_have_unique_widget_keys() -> None:
