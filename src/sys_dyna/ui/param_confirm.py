@@ -88,6 +88,9 @@ def render_analysis_confirm(
 
     with st.form(f"{key_prefix}_form"):
         new_spec = dict(spec)
+        # Bound checks collected as the form is built; surfaced and used to block
+        # submission below so an invalid spec is never sent to the graph.
+        errors: list[str] = []
 
         st.markdown(f"**目的関数**: `{objective.get('variable', '?')}`")
         ocols = st.columns(2)
@@ -118,8 +121,9 @@ def render_analysis_confirm(
             new_dists: list[dict[str, Any]] = []
             for i, dist in enumerate(spec.get("distributions") or []):
                 name = dist.get("name", "")
+                label = _label(name)
                 dkind = dist.get("kind", "normal")
-                st.caption(f"{_label(name)} ({name}) — {dkind}")
+                st.caption(f"{label} ({name}) — {dkind}")
                 nd: dict[str, Any] = {"name": name, "kind": dkind}
                 cols = st.columns(3)
                 if dkind in ("normal", "lognormal"):
@@ -144,6 +148,8 @@ def render_analysis_confirm(
                             "high", value=float(dist.get("high") or 0.0),
                             key=f"{key_prefix}_d{i}_high", format="%.4f",
                         )
+                    if nd["high"] <= nd["low"]:
+                        errors.append(f"{label}（{name}）: high は low より大きくしてください。")
                     if dkind == "triangular":
                         midpoint = (nd["low"] + nd["high"]) / 2.0
                         with cols[2]:
@@ -151,6 +157,10 @@ def render_analysis_confirm(
                                 "mode",
                                 value=float(dist.get("mode") if dist.get("mode") is not None else midpoint),
                                 key=f"{key_prefix}_d{i}_mode", format="%.4f",
+                            )
+                        if not (nd["low"] <= nd["mode"] <= nd["high"]):
+                            errors.append(
+                                f"{label}（{name}）: mode は low と high の間にしてください。"
                             )
                 else:  # fixed
                     with cols[0]:
@@ -172,7 +182,8 @@ def render_analysis_confirm(
             new_ranges: list[dict[str, Any]] = []
             for i, rng in enumerate(spec.get("search_space") or []):
                 name = rng.get("name", "")
-                st.caption(f"{_label(name)} ({name})")
+                label = _label(name)
+                st.caption(f"{label} ({name})")
                 cols = st.columns(3)
                 with cols[0]:
                     low = st.number_input(
@@ -186,6 +197,10 @@ def render_analysis_confirm(
                     )
                 with cols[2]:
                     log = st.checkbox("log", value=bool(rng.get("log", False)), key=f"{key_prefix}_r{i}_log")
+                if high <= low:
+                    errors.append(f"{label}（{name}）: high は low より大きくしてください。")
+                if log and low <= 0:
+                    errors.append(f"{label}（{name}）: log スケールでは low を 0 より大きくしてください。")
                 new_ranges.append({"name": name, "low": low, "high": high, "log": log})
             new_spec["search_space"] = new_ranges
             new_spec["n_trials"] = int(
@@ -207,12 +222,19 @@ def render_analysis_confirm(
         else:
             new_spec.pop("seed", None)
 
+        for msg in errors:
+            st.error(msg)
+
         col_run, col_cancel = st.columns(2)
         run = col_run.form_submit_button("この設定で実行", type="primary")
         cancel = col_cancel.form_submit_button("キャンセル")
 
-    if run:
-        return {"spec": new_spec}
     if cancel:
         return {"spec": {}}  # empty spec -> graph skips the analysis (cancellation)
+    if run and errors:
+        # Invalid bounds: keep the form open (return None) so the user can fix
+        # them; the st.error messages above are shown on this rerun.
+        return None
+    if run:
+        return {"spec": new_spec}
     return None
