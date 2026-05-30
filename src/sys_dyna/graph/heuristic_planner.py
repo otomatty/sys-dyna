@@ -63,43 +63,54 @@ class HeuristicPlanner(Planner):
     ) -> list[Scenario]:
         # Start from a prior turn's values when present so follow-up tweaks
         # preserve unchanged parameters (and multipliers compose on the base).
-        defaults = dict(model.default_params())
+        base = dict(model.default_params())
         if base_params:
             for key, val in base_params.items():
                 spec = model.param(key)
                 if spec is not None:
-                    defaults[key] = spec.clamp(float(val))
+                    base[key] = spec.clamp(float(val))
         text = _normalize_digits(user_text or "")
-        mults = [float(m) for m in _MULT_RE.findall(text)]
 
-        # Explicit "param 数値" overrides (matched by parameter name or label).
-        # Clamp to ParamSpec bounds so offline requests can't run invalid models
-        # (parity with the Gemini parser).
-        overrides: dict[str, float] = {}
+        # Parse each named parameter's number and whether it is a "N倍" multiplier
+        # ("広告費を1.5倍" -> mult) or an absolute value ("churn_rate を 0.1 に").
+        named: dict[str, tuple[float, bool]] = {}
         for p in model.params:
             for token in (p.name, p.label):
                 if not token:
                     continue
-                m = re.search(re.escape(token) + r"[^0-9.-]{0,6}([0-9]+(?:\.[0-9]+)?)", text)
+                m = re.search(
+                    re.escape(token) + r"[^0-9.-]{0,6}([0-9]+(?:\.[0-9]+)?)\s*(倍)?", text
+                )
                 if m:
-                    overrides[p.name] = p.clamp(float(m.group(1)))
+                    named[p.name] = (float(m.group(1)), m.group(2) == "倍")
                     break
 
-        driver = model.params[0].name if model.params else None
-        driver_spec = model.params[0] if model.params else None
-        if driver and mults:
-            scenarios: list[Scenario] = []
-            for mult in mults[:5]:
-                params = dict(defaults)
-                params.update(overrides)
-                params[driver] = driver_spec.clamp(defaults[driver] * mult)
-                scenarios.append(Scenario(name=f"{driver}_x{mult:g}", params=params))
-            return scenarios
+        overrides = {
+            name: model.param(name).clamp(num)
+            for name, (num, is_mult) in named.items()
+            if not is_mult
+        }
+        # Multipliers target the parameter the user named (e.g. 解約率を2倍 ->
+        # churn_rate), or the first driver param when no parameter is named.
+        mult_param = next((n for n, (_, is_mult) in named.items() if is_mult), None)
+        mults = [float(x) for x in _MULT_RE.findall(text)]
+
+        if mults:
+            target = mult_param or (model.params[0].name if model.params else None)
+            if target:
+                tspec = model.param(target)
+                scenarios: list[Scenario] = []
+                for mult in mults[:5]:
+                    params = dict(base)
+                    params.update(overrides)
+                    params[target] = tspec.clamp(base[target] * mult)
+                    scenarios.append(Scenario(name=f"{target}_x{mult:g}", params=params))
+                return scenarios
         if overrides:
-            params = dict(defaults)
+            params = dict(base)
             params.update(overrides)
             return [Scenario(name="custom", params=params)]
-        return [Scenario(name="base", params=dict(defaults))]
+        return [Scenario(name="base", params=dict(base))]
 
     def analyze(
         self,

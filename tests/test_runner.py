@@ -124,6 +124,16 @@ def test_heuristic_followup_param_override_uses_history() -> None:
     assert scenarios[0].params["ad_spend"] == 100.0
 
 
+def test_heuristic_multiplier_targets_named_param_not_driver() -> None:
+    """解約率を2倍 must scale churn_rate, leaving the driver (ad_spend) untouched."""
+    planner = HeuristicPlanner()
+    s = planner.extract_scenarios("解約率を2倍にしたら?", SPEC, [])
+    assert len(s) == 1
+    # churn_rate 0.05 * 2 = 0.1; ad_spend stays at its default.
+    assert s[0].params["churn_rate"] == 0.1
+    assert s[0].params["ad_spend"] == 100.0
+
+
 def test_heuristic_followup_preserves_prior_params() -> None:
     planner = HeuristicPlanner()
     base = {"ad_spend": 150.0, "conversion": 0.5, "churn_rate": 0.05}
