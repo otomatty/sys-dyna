@@ -36,10 +36,15 @@ alter table public.profiles enable row level security;
 
 create policy profiles_select_self_or_admin on public.profiles
     for select using (user_id = auth.uid() or public.is_admin());
-create policy profiles_upsert_self on public.profiles
-    for insert with check (user_id = auth.uid());
-create policy profiles_update_self on public.profiles
-    for update using (user_id = auth.uid());
+-- Self-service rows are forced to role 'member'; only admins may grant 'admin'.
+-- This blocks privilege escalation via a self-update of the role column.
+create policy profiles_insert_self_member on public.profiles
+    for insert with check (user_id = auth.uid() and role = 'member');
+create policy profiles_update_self_no_escalation on public.profiles
+    for update using (user_id = auth.uid())
+    with check (user_id = auth.uid() and role <> 'admin');
+create policy profiles_update_admin on public.profiles
+    for update using (public.is_admin()) with check (true);
 
 -- ---------------------------------------------------------------------------
 -- sd_models: catalog + user-uploaded model registry
@@ -64,10 +69,18 @@ create policy sd_models_select on public.sd_models
     for select using (
         source = 'catalog' or owner_id = auth.uid() or public.is_admin()
     );
-create policy sd_models_insert_own on public.sd_models
-    for insert with check (owner_id = auth.uid());
-create policy sd_models_modify_own on public.sd_models
-    for update using (owner_id = auth.uid() or public.is_admin());
+-- Uploads belong to their owner; only admins may publish shared catalog models.
+create policy sd_models_insert on public.sd_models
+    for insert with check (
+        (source = 'upload' and owner_id = auth.uid())
+        or (source = 'catalog' and public.is_admin())
+    );
+create policy sd_models_update on public.sd_models
+    for update using (owner_id = auth.uid() or public.is_admin())
+    with check (
+        (source = 'upload' and owner_id = auth.uid())
+        or public.is_admin()
+    );
 create policy sd_models_delete_own on public.sd_models
     for delete using (owner_id = auth.uid() or public.is_admin());
 

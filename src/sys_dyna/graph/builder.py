@@ -104,9 +104,17 @@ class _Nodes:
             }
         )
         scenarios = state.get("scenarios", [])
-        if isinstance(decision, dict) and decision.get("scenarios"):
+        # ``"scenarios" in decision`` (not a truthiness check) so an explicit
+        # empty list — the cancellation signal — propagates instead of silently
+        # falling back to the proposed scenarios.
+        if isinstance(decision, dict) and "scenarios" in decision:
             scenarios = decision["scenarios"]
         return {"scenarios": scenarios, "confirmed": True}
+
+    def _route_after_confirm(self, state: AgentState) -> str:
+        # Cancellation (empty scenarios) skips simulation; PySDEngine requires
+        # at least one scenario and would otherwise raise.
+        return "run_simulation" if state.get("scenarios") else "analyze"
 
     def run_simulation(self, state: AgentState) -> dict[str, Any]:
         spec = self.d.model_lookup(state["selected_model_id"])
@@ -174,7 +182,11 @@ def build_graph(deps: GraphDeps, checkpointer: Any | None = None) -> Any:
         {"extract_params": "extract_params", "analyze": "analyze"},
     )
     g.add_edge("extract_params", "confirm_params")
-    g.add_edge("confirm_params", "run_simulation")
+    g.add_conditional_edges(
+        "confirm_params",
+        nodes._route_after_confirm,
+        {"run_simulation": "run_simulation", "analyze": "analyze"},
+    )
     g.add_edge("run_simulation", "persist")
     g.add_edge("persist", "analyze")
     g.add_edge("analyze", END)

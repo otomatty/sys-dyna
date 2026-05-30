@@ -28,7 +28,9 @@ _STARTER_MODELS: tuple[ModelSpec, ...] = (
             "解約率 (churn_rate) が売上を減少させる、基本的なストック・フローモデル。"
             "広告費を増減させたときの売上推移の比較に使う。"
         ),
-        ref=_catalog_ref("sales_growth", "sales_growth.xmile"),
+        # Load the pre-compiled .py (committed) so catalog models work on
+        # read-only filesystems; sales_growth.xmile is kept as the source.
+        ref=_catalog_ref("sales_growth", "sales_growth.py"),
         params=(
             ParamSpec(
                 name="ad_spend",

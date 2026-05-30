@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
@@ -10,6 +11,11 @@ from .models import ModelRef, Scenario, ScenarioResult, SimulationRun
 
 
 logger = logging.getLogger(__name__)
+
+# A cached PySD model is a single stateful instance; ``model.run`` mutates it
+# and is not safe to call concurrently. Engines are shared across sessions via
+# Streamlit's @st.cache_resource, so serialise runs with a process-wide lock.
+_MODEL_RUN_LOCK = threading.Lock()
 
 # Bookkeeping columns PySD always emits; never returned as model variables.
 _PYSD_INTERNAL_COLUMNS = {
@@ -43,6 +49,11 @@ def _load_pysd_model(path: str) -> Any:
         raise SimulationError("model_not_found", f"model file not found: {path}")
     suffix = p.suffix.lower()
     try:
+        # Pre-compiled Python models load directly (pysd.load) — no translation
+        # step, so they work on read-only filesystems where read_xmile/
+        # read_vensim would fail trying to write a .py next to the source.
+        if suffix == ".py":
+            return pysd.load(str(p))
         if suffix == ".xmile" or suffix == ".xml":
             return pysd.read_xmile(str(p))
         if suffix == ".mdl":
@@ -51,7 +62,7 @@ def _load_pysd_model(path: str) -> Any:
         raise SimulationError("model_load_failed", f"could not load model: {e}") from e
     raise SimulationError(
         "unsupported_model_format",
-        f"unsupported model format '{suffix}' (expected .xmile or .mdl)",
+        f"unsupported model format '{suffix}' (expected .py, .xmile, or .mdl)",
     )
 
 
@@ -111,7 +122,10 @@ class PySDEngine:
         try:
             # ``reload`` resets stocks to their initial values so scenarios run
             # independently even though they share one cached model object.
-            frame = model.run(reload=True, **kwargs)
+            # The lock guards that shared, mutable instance against concurrent
+            # runs from other sessions.
+            with _MODEL_RUN_LOCK:
+                frame = model.run(reload=True, **kwargs)
         except KeyError as e:
             raise SimulationError(
                 "unknown_parameter",

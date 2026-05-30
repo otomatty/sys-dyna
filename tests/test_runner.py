@@ -65,6 +65,18 @@ def test_resume_with_edited_parameters() -> None:
     assert out.simulation["scenarios"][0]["params"]["ad_spend"] == 250.0
 
 
+def test_cancel_resumes_cleanly_without_simulation() -> None:
+    """Empty scenarios (cancellation) must complete, not run or hang the thread."""
+    runner = _runner()
+    runner.start("sess-cancel", "広告費を1.5倍にしたら?")
+    out = runner.resume("sess-cancel", {"scenarios": []})
+    assert out.status == "completed"
+    assert out.simulation is None
+    # The thread is no longer interrupted: a fresh turn on the same session works.
+    again = runner.start("sess-cancel", "こんにちは")
+    assert again.status == "completed"
+
+
 def test_heuristic_multiple_multipliers_make_scenarios() -> None:
     planner = HeuristicPlanner()
     scenarios = planner.extract_scenarios("広告費を1.2倍と1.5倍で比較", SPEC)
