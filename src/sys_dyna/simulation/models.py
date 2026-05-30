@@ -23,6 +23,14 @@ class ParamSpec:
     max: float | None = None
     description: str | None = None
 
+    def clamp(self, value: float) -> float:
+        """Clamp a value to this parameter's [min, max] range."""
+        if self.min is not None:
+            value = max(value, self.min)
+        if self.max is not None:
+            value = min(value, self.max)
+        return value
+
 
 @dataclass(frozen=True)
 class ModelRef:

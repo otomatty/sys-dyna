@@ -29,8 +29,13 @@ def to_long_frame(simulation: dict[str, Any], variable: str) -> Any:
     return pd.DataFrame(rows, columns=["t", "value", "scenario"])
 
 
-def render_simulation(simulation: dict[str, Any] | None) -> None:
-    """Render scenario time-series as line charts (one per variable)."""
+def render_simulation(simulation: dict[str, Any] | None, key_prefix: str = "sim") -> None:
+    """Render scenario time-series as line charts (one per variable).
+
+    ``key_prefix`` must be unique per rendered result: the chat history can show
+    several simulations in one run, so without distinct widget keys Streamlit
+    raises a duplicate-element-ID error.
+    """
     import altair as alt
     import streamlit as st
 
@@ -42,7 +47,9 @@ def render_simulation(simulation: dict[str, Any] | None) -> None:
         return
 
     default = "Sales" if "Sales" in variables else variables[0]
-    chosen = st.multiselect("表示する変数", variables, default=[default])
+    chosen = st.multiselect(
+        "表示する変数", variables, default=[default], key=f"{key_prefix}_vars"
+    )
     for var in chosen:
         frame = to_long_frame(simulation, var)
         if frame.empty:
@@ -58,7 +65,7 @@ def render_simulation(simulation: dict[str, Any] | None) -> None:
             )
             .properties(height=280)
         )
-        st.altair_chart(chart, width="stretch")
+        st.altair_chart(chart, width="stretch", key=f"{key_prefix}_chart_{var}")
 
     for warning in simulation.get("warnings", []):
         st.warning(warning)

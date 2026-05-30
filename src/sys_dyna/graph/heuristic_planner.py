@@ -65,6 +65,8 @@ class HeuristicPlanner(Planner):
         mults = [float(m) for m in _MULT_RE.findall(text)]
 
         # Explicit "param 数値" overrides (matched by parameter name or label).
+        # Clamp to ParamSpec bounds so offline requests can't run invalid models
+        # (parity with the Gemini parser).
         overrides: dict[str, float] = {}
         for p in model.params:
             for token in (p.name, p.label):
@@ -72,16 +74,17 @@ class HeuristicPlanner(Planner):
                     continue
                 m = re.search(re.escape(token) + r"[^0-9.-]{0,6}([0-9]+(?:\.[0-9]+)?)", text)
                 if m:
-                    overrides[p.name] = float(m.group(1))
+                    overrides[p.name] = p.clamp(float(m.group(1)))
                     break
 
         driver = model.params[0].name if model.params else None
+        driver_spec = model.params[0] if model.params else None
         if driver and mults:
             scenarios: list[Scenario] = []
             for mult in mults[:5]:
                 params = dict(defaults)
                 params.update(overrides)
-                params[driver] = defaults[driver] * mult  # multiplier wins for driver
+                params[driver] = driver_spec.clamp(defaults[driver] * mult)
                 scenarios.append(Scenario(name=f"{driver}_x{mult:g}", params=params))
             return scenarios
         if overrides:

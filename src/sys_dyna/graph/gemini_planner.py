@@ -114,11 +114,7 @@ def _coerce_float(value: Any) -> float | None:
 
 
 def _clamp(value: float, spec: ParamSpec) -> float:
-    if spec.min is not None:
-        value = max(value, spec.min)
-    if spec.max is not None:
-        value = min(value, spec.max)
-    return value
+    return spec.clamp(value)
 
 
 def parse_scenarios(

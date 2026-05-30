@@ -124,6 +124,13 @@ def test_runner_threads_history_into_turn() -> None:
     assert out.confirm["scenarios"][0]["params"]["churn_rate"] == 0.1
 
 
+def test_heuristic_override_clamped_to_bounds() -> None:
+    planner = HeuristicPlanner()
+    # churn_rate has max=1.0 -> an offline "5" must clamp, not run an invalid model.
+    s = planner.extract_scenarios("churn_rate を 5 に", SPEC, [])
+    assert s[0].params["churn_rate"] == 1.0
+
+
 def test_heuristic_classify_intent() -> None:
     p = HeuristicPlanner()
     assert p.classify_intent("広告を増やしたらどうなる?", []) == "simulate"

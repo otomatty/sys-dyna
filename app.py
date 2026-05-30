@@ -48,6 +48,7 @@ def _bootstrap() -> None:
         st.session_state.session_id = str(uuid.uuid4())
         st.session_state.history = []  # list[ChatTurn]
         st.session_state.pending = None  # TurnOutcome awaiting confirmation
+        st.session_state.confirm_seq = 0  # unique key namespace per confirmation
 
 
 def _render_sidebar(user, settings) -> None:
@@ -81,17 +82,19 @@ def main() -> None:
     st.title("システムダイナミクス × LLM 社内分析ツール")
     st.caption("シミュレーションを実行し、結果を Gemini が分析・説明します。")
 
-    for turn in st.session_state.history:
+    for idx, turn in enumerate(st.session_state.history):
         with st.chat_message(turn.role):
             st.markdown(turn.content)
             if turn.simulation:
-                render_simulation(turn.simulation)
+                render_simulation(turn.simulation, key_prefix=f"sim_{idx}")
 
     # --- HITL: a pending confirmation takes priority over new input ---
     pending = st.session_state.pending
     if pending is not None:
         model = get_model(pending.selected_model_id) if pending.selected_model_id else None
-        decision = render_param_confirm(pending.confirm, model)
+        decision = render_param_confirm(
+            pending.confirm, model, key_prefix=f"confirm_{st.session_state.confirm_seq}"
+        )
         if decision is not None:
             cancelled = not decision.get("scenarios")
             # Always resume so the LangGraph thread leaves the interrupted state,
@@ -131,6 +134,7 @@ def main() -> None:
         return
 
     if outcome.status == "awaiting_confirmation":
+        st.session_state.confirm_seq += 1  # fresh key namespace for this form
         st.session_state.pending = outcome
     else:
         _handle_completed(outcome)
