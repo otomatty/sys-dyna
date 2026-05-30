@@ -9,8 +9,8 @@ from sys_dyna.auth import get_current_user
 from sys_dyna.config import get_settings
 from sys_dyna.graph import build_planner, build_runner
 from sys_dyna.simulation import get_model
-from sys_dyna.ui.charts import render_simulation
-from sys_dyna.ui.param_confirm import render_param_confirm
+from sys_dyna.ui.charts import render_analysis_result, render_simulation
+from sys_dyna.ui.param_confirm import render_analysis_confirm, render_param_confirm
 
 
 st.set_page_config(page_title="SD x LLM 社内分析ツール", layout="wide")
@@ -21,6 +21,8 @@ class ChatTurn:
     role: str
     content: str
     simulation: dict | None = None
+    # Monte Carlo / Bayesian-optimization result payload (SimulationAgent output).
+    analysis: dict | None = None
 
 
 @st.cache_resource(show_spinner=False)
@@ -62,8 +64,13 @@ def _render_sidebar(user, settings) -> None:
         st.caption(f"分析エンジン: {mode} / {settings.gemini_model}")
 
 
-def _append(role: str, content: str, simulation: dict | None = None) -> None:
-    st.session_state.history.append(ChatTurn(role, content, simulation))
+def _append(
+    role: str,
+    content: str,
+    simulation: dict | None = None,
+    analysis: dict | None = None,
+) -> None:
+    st.session_state.history.append(ChatTurn(role, content, simulation, analysis))
 
 
 def _last_simulation_params(history: list[ChatTurn]) -> dict | None:
@@ -75,7 +82,12 @@ def _last_simulation_params(history: list[ChatTurn]) -> dict | None:
 
 
 def _handle_completed(outcome) -> None:
-    _append("assistant", outcome.analysis or "(分析結果がありません)", outcome.simulation)
+    _append(
+        "assistant",
+        outcome.analysis or "(分析結果がありません)",
+        outcome.simulation,
+        getattr(outcome, "simulation_analysis", None),
+    )
 
 
 def main() -> None:
@@ -95,20 +107,32 @@ def main() -> None:
             st.markdown(turn.content)
             if turn.simulation:
                 render_simulation(turn.simulation, key_prefix=f"sim_{idx}")
+            if turn.analysis:
+                render_analysis_result(turn.analysis)
 
     # --- HITL: a pending confirmation takes priority over new input ---
     pending = st.session_state.pending
     if pending is not None:
         model = get_model(pending.selected_model_id) if pending.selected_model_id else None
-        decision = render_param_confirm(
-            pending.confirm, model, key_prefix=f"confirm_{st.session_state.confirm_seq}"
-        )
+        key_prefix = f"confirm_{st.session_state.confirm_seq}"
+        # The advanced-analysis interrupt (confirm_analysis) carries a different
+        # payload/decision shape than the scenario confirm, so route on type —
+        # otherwise the analysis form renders no fields and its result is lost.
+        if (pending.confirm or {}).get("type") == "confirm_analysis":
+            decision = render_analysis_confirm(pending.confirm, model, key_prefix=key_prefix)
+            cancelled = decision is not None and not decision.get("spec")
+            cancel_message = "分析をキャンセルしました。"
+            running_message = "分析を実行中..."
+        else:
+            decision = render_param_confirm(pending.confirm, model, key_prefix=key_prefix)
+            cancelled = decision is not None and not decision.get("scenarios")
+            cancel_message = "シミュレーションをキャンセルしました。"
+            running_message = "シミュレーション実行中..."
         if decision is not None:
-            cancelled = not decision.get("scenarios")
             # Always resume so the LangGraph thread leaves the interrupted state,
             # even on cancel — otherwise the next input on this session fails.
             try:
-                with st.spinner("処理中..." if cancelled else "シミュレーション実行中..."):
+                with st.spinner("処理中..." if cancelled else running_message):
                     outcome = runner.resume(session_id, decision)
             except Exception as e:
                 # Keep `pending` so the confirmation form survives a failed resume.
@@ -117,7 +141,7 @@ def main() -> None:
                 return
             st.session_state.pending = None
             if cancelled:
-                _append("assistant", "シミュレーションをキャンセルしました。")
+                _append("assistant", cancel_message)
             else:
                 _handle_completed(outcome)
             st.rerun()

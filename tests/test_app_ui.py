@@ -41,6 +41,21 @@ def test_single_simulation_turn_produces_analysis() -> None:
     assert any("シミュレーション結果" in m.value for m in at.markdown)
 
 
+def test_monte_carlo_turn_confirms_then_renders_result() -> None:
+    """The analysis interrupt must use its own confirm form and surface the
+    result — not fall through the scenario form and be dropped as cancelled."""
+    at = AppTest.from_file("app.py", default_timeout=60)
+    at.run()
+    at.chat_input[0].set_value("広告費のばらつきをモンテカルロで30回見たい").run()
+    # The dedicated analysis-confirm form appears (distinct run-button label).
+    assert any(b.label == "この設定で実行" for b in at.button)
+    [b for b in at.button if b.label == "この設定で実行"][0].click().run()
+    assert not at.exception
+    # The analysis summary is shown, and it is NOT treated as a cancellation.
+    assert any("モンテカルロ" in m.value for m in at.markdown)
+    assert not any("キャンセル" in m.value for m in at.markdown)
+
+
 def test_multiple_simulations_in_history_have_unique_widget_keys() -> None:
     """Regression: several simulations in one run must not collide on widget IDs."""
     at = AppTest.from_file("app.py", default_timeout=40)
