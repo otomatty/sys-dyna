@@ -125,3 +125,12 @@ def test_no_distributions_raises() -> None:
     with pytest.raises(SimulationError) as ei:
         mc.run(_REF, {}, [], Objective("Sales"))
     assert ei.value.code == "no_distributions"
+
+
+def test_triangular_requires_high_greater_than_low() -> None:
+    # numpy's triangular needs right > left; reject hi == lo at construction.
+    with pytest.raises(SimulationError) as ei:
+        ParamDistribution("x", "triangular", low=5.0, high=5.0)
+    assert ei.value.code == "invalid_distribution"
+    # uniform with equal bounds is still allowed (degenerate but valid).
+    ParamDistribution("x", "uniform", low=5.0, high=5.0)

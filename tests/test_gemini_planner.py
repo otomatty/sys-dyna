@@ -6,15 +6,58 @@ import pytest
 
 from sys_dyna.graph.gemini_planner import (
     GeminiPlanner,
+    _merge_analysis_request,
     parse_intent,
     parse_model_id,
     parse_scenarios,
 )
 from sys_dyna.simulation import get_model
+from sys_dyna.simulation.analysis import build_default_analysis_request
 
 
 SPEC = get_model("sales_growth")
 assert SPEC is not None
+
+
+def _default_request(kind: str) -> dict:
+    return build_default_analysis_request("", SPEC, kind, None)
+
+
+def test_merge_drops_invalid_and_unknown_distribution_entries() -> None:
+    default = _default_request("montecarlo")
+    data = {
+        "distributions": [
+            {"name": "ad_spend", "kind": "normal", "mean": 100, "std": 10},  # valid
+            {"name": "ad_spend", "kind": "normal"},  # invalid: missing mean/std
+            {"name": "ghost", "kind": "uniform", "low": 0, "high": 1},  # unknown param
+            "garbage",  # not even a dict
+        ]
+    }
+    merged = _merge_analysis_request(default, data, "montecarlo", SPEC)
+    assert merged["distributions"] == [
+        {"name": "ad_spend", "kind": "normal", "mean": 100, "std": 10}
+    ]
+
+
+def test_merge_keeps_default_when_every_entry_invalid() -> None:
+    default = _default_request("montecarlo")
+    data = {"distributions": [{"name": "ad_spend", "kind": "normal"}]}  # missing fields
+    merged = _merge_analysis_request(default, data, "montecarlo", SPEC)
+    assert merged["distributions"] == default["distributions"]
+
+
+def test_merge_rejects_unknown_objective_variable_but_keeps_valid_direction() -> None:
+    default = _default_request("optimize")
+    data = {"objective": {"variable": "NotARealVariable", "direction": "minimize"}}
+    merged = _merge_analysis_request(default, data, "optimize", SPEC)
+    assert merged["objective"]["variable"] == default["objective"]["variable"]
+    assert merged["objective"]["direction"] == "minimize"
+
+
+def test_merge_tolerates_non_list_search_space() -> None:
+    default = _default_request("optimize")
+    merged = _merge_analysis_request(default, {"search_space": 123}, "optimize", SPEC)
+    assert merged["search_space"] == default["search_space"]
 
 
 def test_parse_intent_variants() -> None:

@@ -55,6 +55,12 @@ class ParamDistribution:
                 raise SimulationError(
                     "invalid_distribution", f"{self.name}: high ({hi}) must be >= low ({lo})"
                 )
+            # numpy's triangular requires right > left; uniform tolerates hi == lo.
+            if self.kind == "triangular" and hi == lo:
+                raise SimulationError(
+                    "invalid_distribution",
+                    f"{self.name}: triangular requires high > low (got {lo})",
+                )
         elif self.kind == "fixed":
             if self.mean is None and self.low is None:
                 raise SimulationError(

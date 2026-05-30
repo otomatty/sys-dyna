@@ -111,17 +111,31 @@ class BayesianOptimization:
         sampler = optuna.samplers.TPESampler(seed=seed)
         study = optuna.create_study(direction=objective.direction, sampler=sampler)
 
+        # Clamp each search range to the model's valid bounds *up front* so
+        # Optuna only ever proposes runnable values. Clamping a suggestion after
+        # the fact (the previous approach) recorded a value Optuna never actually
+        # evaluated: study.best_params / history would disagree with best_value,
+        # and the TPE surrogate would be fed contradictory (input, output) pairs.
+        bounds: list[tuple[str, float, float, bool]] = []
+        for rng in search_space:
+            low = clamp(rng.name, rng.low) if clamp is not None else rng.low
+            high = clamp(rng.name, rng.high) if clamp is not None else rng.high
+            if high <= low:
+                high = low + 1e-9
+            # A log scale needs a strictly positive lower bound; if clamping
+            # pushed it to <= 0, fall back to a linear scale for that parameter.
+            log = bool(rng.log and low > 0)
+            bounds.append((rng.name, low, high, log))
+
         history: list[dict[str, Any]] = []
 
         def _trial_objective(trial: Any) -> float:
             params = dict(base_params)
             suggested: dict[str, float] = {}
-            for rng in search_space:
-                value = trial.suggest_float(rng.name, rng.low, rng.high, log=rng.log)
-                suggested[rng.name] = value
-                if clamp is not None:
-                    value = clamp(rng.name, value)
-                params[rng.name] = value
+            for name, low, high, log in bounds:
+                value = trial.suggest_float(name, low, high, log=log)
+                suggested[name] = value
+                params[name] = value
             run = self._engine.run_scenarios(
                 ref,
                 [Scenario(name=f"trial_{trial.number}", params=params)],

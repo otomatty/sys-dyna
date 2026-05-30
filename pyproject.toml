@@ -15,7 +15,6 @@ dependencies = [
     "altair>=5.0",
     "numpy>=1.24",
     "pysd>=3.14",
-    "optuna>=3.5",
     "langgraph>=0.4",
     "langchain-core>=0.3",
     "langchain-google-genai>=2.0",
@@ -23,9 +22,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Bayesian optimization (bayesopt.py) imports optuna lazily, so it is optional:
+# install `sys-dyna[analysis]` to enable it. Monte Carlo (numpy) is core.
+analysis = [
+    "optuna>=3.5",
+]
 dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
+    "optuna>=3.5",
 ]
 postgres = [
     "langgraph-checkpoint-postgres>=2.0",

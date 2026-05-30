@@ -6,6 +6,8 @@ import re
 from typing import Any
 
 from ..simulation.analysis import build_default_analysis_request
+from ..simulation.analysis.distributions import ParamDistribution, ParamRange
+from ..simulation.engine import SimulationError
 from ..simulation.models import ModelSpec, ParamSpec, Scenario
 from .planner import Planner
 
@@ -221,7 +223,9 @@ def _merge_analysis_request(
     obj = data.get("objective")
     if isinstance(obj, dict):
         base_obj = dict(default["objective"])
-        if isinstance(obj.get("variable"), str) and obj["variable"]:
+        # Only accept a variable the model actually outputs; an arbitrary LLM
+        # string would otherwise pass through and fail later as unknown_variable.
+        if obj.get("variable") in model.output_variables:
             base_obj["variable"] = obj["variable"]
         if obj.get("aggregate") in ("final", "initial", "mean", "min", "max", "sum"):
             base_obj["aggregate"] = obj["aggregate"]
@@ -229,29 +233,41 @@ def _merge_analysis_request(
             base_obj["direction"] = obj["direction"]
         merged["objective"] = base_obj
 
+    # Validate each LLM-produced entry by constructing it the same way the tools
+    # will. A partial/malformed entry (e.g. a normal distribution missing
+    # mean/std) is dropped rather than replacing the runnable heuristic default,
+    # so a noisy reply degrades gracefully instead of failing the whole analysis.
     if kind == "montecarlo":
-        dists = [
-            d
-            for d in (data.get("distributions") or [])
-            if isinstance(d, dict) and d.get("name") in valid_names
-        ]
-        if dists:
-            merged["distributions"] = dists
+        raw = data.get("distributions")
+        if isinstance(raw, list):
+            dists = [d for d in raw if _valid_entry(ParamDistribution, d, valid_names)]
+            if dists:
+                merged["distributions"] = dists
         it = _coerce_int(data.get("iterations"))
         if it and it > 0:
             merged["iterations"] = it
     else:  # optimize
-        space = [
-            r
-            for r in (data.get("search_space") or [])
-            if isinstance(r, dict) and r.get("name") in valid_names
-        ]
-        if space:
-            merged["search_space"] = space
+        raw = data.get("search_space")
+        if isinstance(raw, list):
+            space = [r for r in raw if _valid_entry(ParamRange, r, valid_names)]
+            if space:
+                merged["search_space"] = space
         nt = _coerce_int(data.get("n_trials"))
         if nt and nt > 0:
             merged["n_trials"] = nt
     return merged
+
+
+def _valid_entry(factory: Any, entry: Any, valid_names: set[str]) -> bool:
+    """True if ``entry`` is a dict naming a real parameter and ``factory`` (a
+    ParamDistribution/ParamRange ``from_dict``) accepts it without error."""
+    if not isinstance(entry, dict) or entry.get("name") not in valid_names:
+        return False
+    try:
+        factory.from_dict(entry)
+    except SimulationError:
+        return False
+    return True
 
 
 def _coerce_int(value: Any) -> int | None:

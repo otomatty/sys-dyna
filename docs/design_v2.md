@@ -113,7 +113,7 @@ class AgentState(TypedDict):
     session_id: str
     user_id: str
     messages: Annotated[list[BaseMessage], add_messages]
-    intent: Literal["simulate", "past_reference", "followup", "general"] | None
+    intent: Literal["simulate", "past_reference", "montecarlo", "optimize", "followup", "general"] | None
     selected_model: ModelRef | None          # カタログ / アップロード参照
     extracted_params: dict[str, float] | None
     scenarios: list[Scenario]                 # シナリオ比較用（1件以上）
@@ -127,7 +127,7 @@ class AgentState(TypedDict):
 
 | ノード | 役割 |
 |---|---|
-| `classify_intent` | Gemini でユーザー意図を分類（simulate / past_reference / followup / general） |
+| `classify_intent` | Gemini でユーザー意図を分類（simulate / past_reference / montecarlo / optimize / followup / general） |
 | `retrieve_past` | 過去参照ツール群（`query_sessions` → `get_session_full` → `get_simulation_results`）を呼び、文脈を収集 |
 | `select_model` | カタログ照合 / アップロードモデル解決 / 直前モデル継続 |
 | `extract_params` | 自然言語からパラメータ・シナリオ集合を抽出（モデル仕様をコンテキストに与える） |
@@ -149,6 +149,7 @@ classify_intent ─┬─(simulate)──────────→ select_mode
 
 confirm_params  ─(interrupt: 修正)→ extract_params で再提示
 confirm_params  ─(承認)→ run_simulation → persist → analyze → END
+confirm_analysis ─(interrupt: 修正)→ prepare_analysis で再提示
 confirm_analysis ─(承認)→ run_analysis (SimulationAgent) → persist → END
 ```
 

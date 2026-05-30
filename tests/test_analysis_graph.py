@@ -116,8 +116,13 @@ def test_optimize_flow_runs_and_skips_analyze_node() -> None:
         _deps("optimize", lambda p: -((p["ad_spend"] - 80.0) ** 2)), checkpointer=MemorySaver()
     )
     cfg = {"configurable": {"thread_id": "opt"}}
-    graph.invoke({"user_text": "広告費を最適化して", "session_id": "s", "user_id": "u"}, cfg)
-    final = graph.invoke(Command(resume="approve"), cfg)
+    out = graph.invoke({"user_text": "広告費を最適化して", "session_id": "s", "user_id": "u"}, cfg)
+    # Pin the TPE sampler seed (the default analysis spec omits it) so the
+    # best-params assertion below is deterministic and not CI-flaky.
+    spec = dict(out["__interrupt__"][0].value["spec"])
+    spec["seed"] = 0
+    spec["n_trials"] = 40
+    final = graph.invoke(Command(resume={"spec": spec}), cfg)
 
     assert final["simulation_analysis"]["kind"] == "optimize"
     assert final["simulation_analysis"]["best_params"]["ad_spend"] == pytest.approx(80.0, abs=15.0)

@@ -132,3 +132,23 @@ def test_missing_distributions_raises() -> None:
     with pytest.raises(AnalysisError) as ei:
         agent.run("montecarlo", {"model_id": "sales_growth"})
     assert ei.value.code == "invalid_argument"
+
+
+def test_unexpected_tool_exception_is_normalized_to_analysis_error() -> None:
+    # A non-SimulationError from deep in the engine must surface as AnalysisError
+    # (not escape and crash the graph turn, which only catches AnalysisError).
+    class BoomEngine:
+        def run_scenarios(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("boom")
+
+    agent = SimulationAgent(BoomEngine(), model_lookup=_lookup)
+    with pytest.raises(AnalysisError) as ei:
+        agent.run(
+            "montecarlo",
+            {
+                "model_id": "sales_growth",
+                "distributions": [{"name": "ad_spend", "kind": "fixed", "mean": 1.0}],
+            },
+        )
+    assert ei.value.code == "analysis_failed"
+    assert "boom" in ei.value.message

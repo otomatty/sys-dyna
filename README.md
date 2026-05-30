@@ -85,7 +85,7 @@ pytest
 | 要件 | 実装 |
 |---|---|
 | シミュレーション実行 | `src/sys_dyna/simulation/engine.py` (PySD) |
-| モンテカルロ分析 / ベイズ最適化 | `src/sys_dyna/agents/`（`SimulationAgent` + 2 ツール）+ `simulation/analysis/` |
+| モンテカルロ分析 / ベイズ最適化 | `src/sys_dyna/agents/`（`SimulationAgent` + 2 ツール）+ `src/sys_dyna/simulation/analysis/` |
 | モデルカタログ | `src/sys_dyna/simulation/catalog.py` + `catalog_models/*.xmile` |
 | AI オーケストレーション | `src/sys_dyna/graph/builder.py` (LangGraph) |
 | HITL パラメータ確認 | `graph` の `confirm_params`（`interrupt`）+ `ui/param_confirm.py` |

@@ -86,3 +86,24 @@ def test_no_search_space_raises() -> None:
     with pytest.raises(SimulationError) as ei:
         bo.optimize(_REF, {}, [], Objective("Sales"))
     assert ei.value.code == "no_search_space"
+
+
+def test_clamp_keeps_reported_params_within_model_bounds() -> None:
+    # Sales == x (maximise). The range allows up to 100, but a clamp restricts
+    # the model to <= 10. best_params/history must reflect values actually run
+    # (i.e. clamped), not Optuna's raw out-of-range suggestions.
+    engine = FakeEngine(lambda p: p["x"])
+    bo = BayesianOptimization(engine)
+    result = bo.optimize(
+        _REF,
+        {},
+        [ParamRange("x", low=0.0, high=100.0)],
+        Objective("Sales", direction="maximize"),
+        n_trials=30,
+        seed=0,
+        clamp=lambda name, v: min(v, 10.0),
+    )
+    assert result.best_params["x"] <= 10.0 + 1e-6
+    assert all(h["params"]["x"] <= 10.0 + 1e-6 for h in result.history)
+    # The clamp caps the achievable objective at 10.
+    assert result.best_value == pytest.approx(10.0, abs=0.5)

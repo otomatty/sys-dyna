@@ -95,4 +95,10 @@ class SimulationAgent:
             result = tool.run(arguments)
         except ToolError as e:
             raise AnalysisError(e.code, e.message) from e
+        except Exception as e:  # broaden per the "any failure" contract above
+            # Tools wrap SimulationError as ToolError, but an unexpected error
+            # (e.g. a missing numpy/optuna import, or a TypeError deep in the
+            # engine) would otherwise escape and crash the graph turn, since
+            # builder.run_analysis only catches AnalysisError.
+            raise AnalysisError("analysis_failed", f"{type(e).__name__}: {e}") from e
         return result.payload
