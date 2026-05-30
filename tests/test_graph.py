@@ -29,8 +29,10 @@ class FakePlanner:
     def select_model(self, user_text, catalog, history) -> str | None:
         return "sales_growth"
 
-    def extract_scenarios(self, user_text, model: ModelSpec, history) -> list[Scenario]:
-        base = model.default_params()
+    def extract_scenarios(
+        self, user_text, model: ModelSpec, history, base_params=None
+    ) -> list[Scenario]:
+        base = dict(base_params or model.default_params())
         return [Scenario(name="ad_x1.5", params={**base, "ad_spend": 150.0})]
 
     def analyze(self, user_text, model, simulation, past_references, history) -> str:

@@ -40,12 +40,12 @@ _EXTRACT_PROMPT = """\
 モデル: {model_name}
 調整可能なパラメータ(name: 既定値, 説明):
 {param_lines}
-{history}
+{current}{history}
 ユーザー発言: {user_text}
 
 次の JSON のみを出力してください。複数シナリオの比較要求があれば複数要素にします。
-追問の場合は直前のシナリオを踏まえ、変更点だけ反映してください。
-変更しないパラメータは省略可(既定値が使われます)。
+追問の場合は「現在の設定値」を起点に、変更点だけ反映してください。
+変更しないパラメータは省略可(起点の値が使われます)。
 {{"scenarios": [{{"name": "シナリオ名", "params": {{"パラメータ名": 数値}}}}]}}
 JSON:"""
 
@@ -117,31 +117,57 @@ def _clamp(value: float, spec: ParamSpec) -> float:
     return spec.clamp(value)
 
 
+def resolve_base_params(
+    model: ModelSpec, base_params: dict[str, Any] | None
+) -> dict[str, float]:
+    """Starting point for a scenario: model defaults, overlaid with carried-over
+    params from a prior turn (clamped; unknown/non-numeric entries dropped).
+
+    This is what makes follow-up edits ("then set churn_rate to 0.1") preserve
+    the previous run's unchanged values instead of reverting to defaults.
+    """
+    base = model.default_params()
+    if base_params:
+        for key, val in base_params.items():
+            spec = model.param(key)
+            if spec is None:
+                continue
+            fv = _coerce_float(val)
+            if fv is None:
+                continue
+            base[key] = _clamp(fv, spec)
+    return base
+
+
 def parse_scenarios(
-    raw: str, model: ModelSpec, max_scenarios: int = 5
+    raw: str,
+    model: ModelSpec,
+    max_scenarios: int = 5,
+    base_params: dict[str, Any] | None = None,
 ) -> list[Scenario]:
     """Parse the extract-scenarios JSON into validated ``Scenario`` objects.
 
     - unknown parameter names are dropped
     - non-numeric values are ignored
     - values are clamped to each ParamSpec's [min, max]
-    - omitted parameters fall back to the model defaults
-    Malformed output yields a single default scenario rather than raising.
+    - omitted parameters fall back to ``base_params`` (a prior turn's values)
+      or the model defaults
+    Malformed output yields a single base scenario rather than raising.
     """
-    defaults = model.default_params()
+    base = resolve_base_params(model, base_params)
     data = _extract_json(raw)
     raw_scenarios = []
     if isinstance(data, dict):
         raw_scenarios = data.get("scenarios") or []
     if not isinstance(raw_scenarios, list) or not raw_scenarios:
-        return [Scenario(name="base", params=dict(defaults))]
+        return [Scenario(name="base", params=dict(base))]
 
     scenarios: list[Scenario] = []
     for i, item in enumerate(raw_scenarios[:max_scenarios]):
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or f"scenario_{i + 1}")
-        params = dict(defaults)
+        params = dict(base)
         raw_params = item.get("params")
         if isinstance(raw_params, dict):
             for key, val in raw_params.items():
@@ -153,7 +179,7 @@ def parse_scenarios(
                     continue
                 params[key] = _clamp(fv, spec)
         scenarios.append(Scenario(name=name, params=params))
-    return scenarios or [Scenario(name="base", params=dict(defaults))]
+    return scenarios or [Scenario(name="base", params=dict(base))]
 
 
 def _extract_json(raw: str) -> Any:
@@ -249,16 +275,22 @@ class GeminiPlanner(Planner):
         user_text: str,
         model: ModelSpec,
         history: list[dict[str, Any]],
+        base_params: dict[str, float] | None = None,
     ) -> list[Scenario]:
+        current = ""
+        if base_params:
+            base = resolve_base_params(model, base_params)
+            current = "現在の設定値: " + json.dumps(base, ensure_ascii=False) + "\n"
         raw = self._ask(
             _EXTRACT_PROMPT.format(
                 model_name=model.name,
                 param_lines=_param_lines(model),
+                current=current,
                 user_text=user_text,
                 history=format_history(history),
             )
         )
-        return parse_scenarios(raw, model, self._max_scenarios)
+        return parse_scenarios(raw, model, self._max_scenarios, base_params)
 
     def analyze(
         self,

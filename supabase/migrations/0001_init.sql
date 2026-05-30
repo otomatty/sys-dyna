@@ -6,6 +6,19 @@
 -- Design ref: docs/design_v2.md sections 7 (data model) and 8 (auth).
 
 -- ---------------------------------------------------------------------------
+-- profiles: app-side user attributes, 1:1 with auth.users
+-- Created first so the is_admin() SQL function below (whose body is validated
+-- at creation time) can reference it on a fresh database.
+-- ---------------------------------------------------------------------------
+create table if not exists public.profiles (
+    user_id      uuid primary key references auth.users(id) on delete cascade,
+    display_name text not null,
+    department   text,
+    role         text not null default 'member' check (role in ('member', 'admin')),
+    created_at   timestamptz not null default now()
+);
+
+-- ---------------------------------------------------------------------------
 -- Helper: is the current user an admin? (admins get org-wide read access)
 -- ---------------------------------------------------------------------------
 create or replace function public.is_admin()
@@ -20,17 +33,6 @@ as $$
     false
   );
 $$;
-
--- ---------------------------------------------------------------------------
--- profiles: app-side user attributes, 1:1 with auth.users
--- ---------------------------------------------------------------------------
-create table if not exists public.profiles (
-    user_id      uuid primary key references auth.users(id) on delete cascade,
-    display_name text not null,
-    department   text,
-    role         text not null default 'member' check (role in ('member', 'admin')),
-    created_at   timestamptz not null default now()
-);
 
 alter table public.profiles enable row level security;
 

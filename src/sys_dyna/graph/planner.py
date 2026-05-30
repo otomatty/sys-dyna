@@ -35,12 +35,14 @@ class Planner(Protocol):
         user_text: str,
         model: ModelSpec,
         history: list[dict[str, Any]],
+        base_params: dict[str, float] | None = None,
     ) -> list[Scenario]:
         """Turn the natural-language request into one or more parameter sets.
 
-        Implementations should start from ``model.default_params()`` and only
-        override what the user asked to change. ``history`` lets follow-up
-        requests ("then make churn 0.1") build on the previous turn.
+        Implementations start from ``base_params`` (a prior turn's values, when
+        present) or ``model.default_params()`` and only override what the user
+        asked to change, so follow-up edits ("then make churn 0.1") preserve the
+        previous run's unchanged parameters.
         """
         ...
 

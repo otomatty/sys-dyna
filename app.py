@@ -66,6 +66,14 @@ def _append(role: str, content: str, simulation: dict | None = None) -> None:
     st.session_state.history.append(ChatTurn(role, content, simulation))
 
 
+def _last_simulation_params(history: list[ChatTurn]) -> dict | None:
+    """First scenario's params from the most recent simulation turn, if any."""
+    for turn in reversed(history):
+        if turn.simulation and turn.simulation.get("scenarios"):
+            return dict(turn.simulation["scenarios"][0].get("params") or {})
+    return None
+
+
 def _handle_completed(outcome) -> None:
     _append("assistant", outcome.analysis or "(分析結果がありません)", outcome.simulation)
 
@@ -122,11 +130,18 @@ def main() -> None:
     # Prior turns (excluding the input we're about to add) give the LLM
     # multi-turn context for follow-up questions.
     history = [{"role": t.role, "content": t.content} for t in st.session_state.history]
+    # The most recent simulation's first scenario seeds follow-up edits so an
+    # unchanged parameter keeps its previous value rather than reverting.
+    base_params = _last_simulation_params(st.session_state.history)
     _append("user", user_input)
     try:
         with st.spinner("解析中..."):
             outcome = runner.start(
-                session_id, user_input, user_id=user.user_id, history=history
+                session_id,
+                user_input,
+                user_id=user.user_id,
+                history=history,
+                base_params=base_params,
             )
     except Exception as e:
         _append("assistant", f"エラーが発生しました: {e}")

@@ -124,6 +124,26 @@ def test_heuristic_followup_param_override_uses_history() -> None:
     assert scenarios[0].params["ad_spend"] == 100.0
 
 
+def test_heuristic_followup_preserves_prior_params() -> None:
+    planner = HeuristicPlanner()
+    base = {"ad_spend": 150.0, "conversion": 0.5, "churn_rate": 0.05}
+    s = planner.extract_scenarios("churn_rate を 0.1 に", SPEC, [], base)
+    # The changed param is applied; the prior ad_spend (150) is preserved, not
+    # reverted to the default (100).
+    assert s[0].params["churn_rate"] == 0.1
+    assert s[0].params["ad_spend"] == 150.0
+
+
+def test_runner_followup_carries_base_params() -> None:
+    runner = _runner()
+    base = {"ad_spend": 150.0, "conversion": 0.5, "churn_rate": 0.05}
+    out = runner.start("sess-follow", "解約率を0.1にしたら?", base_params=base)
+    assert out.status == "awaiting_confirmation"
+    params = out.confirm["scenarios"][0]["params"]
+    assert params["churn_rate"] == 0.1
+    assert params["ad_spend"] == 150.0  # carried from the prior run
+
+
 def test_runner_threads_history_into_turn() -> None:
     runner = _runner()
     history = [

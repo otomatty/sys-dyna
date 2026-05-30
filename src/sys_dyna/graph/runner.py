@@ -44,6 +44,7 @@ class TurnRunner:
         user_text: str,
         user_id: str = "",
         history: list[dict[str, Any]] | None = None,
+        base_params: dict[str, float] | None = None,
     ) -> TurnOutcome:
         result = self._graph.invoke(
             {
@@ -51,6 +52,9 @@ class TurnRunner:
                 "session_id": session_id,
                 "user_id": user_id,
                 "messages": list(history or []),
+                # A prior turn's params (from the last simulation) so follow-up
+                # edits build on them instead of reverting to defaults.
+                "base_params": dict(base_params or {}),
                 # The checkpointer reuses one thread per session and merges this
                 # input into the existing state, so explicitly reset per-turn
                 # fields — otherwise a prior turn's simulation/model leaks into a

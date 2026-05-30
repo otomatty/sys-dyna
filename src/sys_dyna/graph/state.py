@@ -30,6 +30,8 @@ class AgentState(TypedDict, total=False):
 
     intent: Intent
     selected_model_id: str | None
+    # A prior turn's scenario params, carried in so follow-up edits build on them.
+    base_params: dict[str, float]
     scenarios: list[ScenarioDict]
     confirmed: bool
 

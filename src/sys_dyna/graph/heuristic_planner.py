@@ -59,8 +59,16 @@ class HeuristicPlanner(Planner):
         user_text: str,
         model: ModelSpec,
         history: list[dict[str, Any]],
+        base_params: dict[str, float] | None = None,
     ) -> list[Scenario]:
-        defaults = model.default_params()
+        # Start from a prior turn's values when present so follow-up tweaks
+        # preserve unchanged parameters (and multipliers compose on the base).
+        defaults = dict(model.default_params())
+        if base_params:
+            for key, val in base_params.items():
+                spec = model.param(key)
+                if spec is not None:
+                    defaults[key] = spec.clamp(float(val))
         text = _normalize_digits(user_text or "")
         mults = [float(m) for m in _MULT_RE.findall(text)]
 

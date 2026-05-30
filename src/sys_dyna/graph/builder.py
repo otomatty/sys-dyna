@@ -82,7 +82,10 @@ class _Nodes:
     def extract_params(self, state: AgentState) -> dict[str, Any]:
         spec = self.d.model_lookup(state["selected_model_id"])
         scenarios = self.d.planner.extract_scenarios(
-            state["user_text"], spec, state.get("messages") or []
+            state["user_text"],
+            spec,
+            state.get("messages") or [],
+            state.get("base_params") or None,
         )
         if not scenarios:
             scenarios = [Scenario(name="base", params=spec.default_params())]
