@@ -120,11 +120,12 @@ class BayesianOptimization:
         for rng in search_space:
             low = clamp(rng.name, rng.low) if clamp is not None else rng.low
             high = clamp(rng.name, rng.high) if clamp is not None else rng.high
-            if high <= low:
-                high = low + 1e-9
-            # A log scale needs a strictly positive lower bound; if clamping
-            # pushed it to <= 0, fall back to a linear scale for that parameter.
-            log = bool(rng.log and low > 0)
+            # Clamping is monotonic (low <= high always). When the whole range
+            # falls outside the model's bounds it collapses onto a single
+            # feasible value (low == high); Optuna treats that as a constant and
+            # keeps the suggestion exactly on the bound — so never widen it back
+            # out, which would let a value cross the model limit.
+            log = bool(rng.log and low > 0 and low < high)
             bounds.append((rng.name, low, high, log))
 
         history: list[dict[str, Any]] = []

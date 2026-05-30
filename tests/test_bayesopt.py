@@ -107,3 +107,22 @@ def test_clamp_keeps_reported_params_within_model_bounds() -> None:
     assert all(h["params"]["x"] <= 10.0 + 1e-6 for h in result.history)
     # The clamp caps the achievable objective at 10.
     assert result.best_value == pytest.approx(10.0, abs=0.5)
+
+
+def test_clamp_collapsed_range_stays_exactly_on_bound() -> None:
+    # A range wholly above the model max collapses both ends onto the bound
+    # (1.0). Optuna must report exactly 1.0 and never a value past it — the
+    # previous +1e-9 widening let suggestions cross the declared limit.
+    engine = FakeEngine(lambda p: p["x"])
+    bo = BayesianOptimization(engine)
+    result = bo.optimize(
+        _REF,
+        {},
+        [ParamRange("x", low=2.0, high=3.0)],
+        Objective("Sales", direction="maximize"),
+        n_trials=10,
+        seed=0,
+        clamp=lambda name, v: min(v, 1.0),
+    )
+    assert result.best_params["x"] == pytest.approx(1.0)
+    assert all(h["params"]["x"] <= 1.0 for h in result.history)
