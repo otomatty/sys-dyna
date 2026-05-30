@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<xmile version="1.0" xmlns="http://docs.oasis-open.org/xmile/ns/XMILE/v1.0">
+  <header>
+    <vendor>sys-dyna</vendor>
+    <product version="1.0">sys-dyna catalog</product>
+    <name>Sales Growth (advertising)</name>
+  </header>
+  <sim_specs method="Euler" time_units="month">
+    <start>0</start>
+    <stop>24</stop>
+    <dt>1</dt>
+  </sim_specs>
+  <model>
+    <variables>
+      <!-- Stock: current customer base -->
+      <stock name="Sales">
+        <eqn>1000</eqn>
+        <inflow>acquisition</inflow>
+        <outflow>churn_flow</outflow>
+      </stock>
+      <!-- New customers acquired per period, driven by advertising spend -->
+      <flow name="acquisition">
+        <eqn>ad_spend * conversion</eqn>
+      </flow>
+      <!-- Customers lost per period -->
+      <flow name="churn_flow">
+        <eqn>Sales * churn_rate</eqn>
+      </flow>
+      <!-- Parameters (overridable) -->
+      <aux name="ad_spend">
+        <eqn>100</eqn>
+      </aux>
+      <aux name="conversion">
+        <eqn>0.5</eqn>
+      </aux>
+      <aux name="churn_rate">
+        <eqn>0.05</eqn>
+      </aux>
+    </variables>
+  </model>
+</xmile>
