@@ -1,0 +1,240 @@
+from __future__ import annotations
+
+import json
+import logging
+import re
+from typing import Any
+
+from ..simulation.models import ModelSpec, ParamSpec, Scenario
+from .planner import Planner
+
+
+logger = logging.getLogger(__name__)
+
+_VALID_INTENTS = ("simulate", "past_reference", "general")
+
+_INTENT_PROMPT = """\
+あなたはシステムダイナミクス分析ツールのルータです。
+ユーザーの発言を次のいずれかに分類し、ラベルのみを1語で出力してください。
+
+- simulate: シミュレーションの実行や「もし〜したら」の予測を求めている
+- past_reference: 過去・以前の分析事例の参照だけを求めている
+- general: 上記以外の一般的な質問・雑談
+
+ユーザー発言: {user_text}
+ラベル:"""
+
+_SELECT_PROMPT = """\
+ユーザーの要求に最も適したシミュレーションモデルを1つ選びます。
+候補モデル(JSON): {catalog}
+
+ユーザー発言: {user_text}
+
+最も適切な model_id だけを出力してください。該当が無ければ none と出力してください。
+model_id:"""
+
+_EXTRACT_PROMPT = """\
+ユーザーの要求を、モデルのパラメータ設定(シナリオ)に変換します。
+モデル: {model_name}
+調整可能なパラメータ(name: 既定値, 説明):
+{param_lines}
+
+ユーザー発言: {user_text}
+
+次の JSON のみを出力してください。複数シナリオの比較要求があれば複数要素にします。
+変更しないパラメータは省略可(既定値が使われます)。
+{{"scenarios": [{{"name": "シナリオ名", "params": {{"パラメータ名": 数値}}}}]}}
+JSON:"""
+
+_ANALYZE_PROMPT = """\
+あなたはシステムダイナミクス分析の専門家です。以下の数値シミュレーション結果を解釈し、
+日本語で簡潔に説明してください。要因・ボトルネック・示唆に触れ、断定しすぎないこと。
+
+ユーザーの質問: {user_text}
+モデル: {model_name}
+シミュレーション結果(JSON): {simulation}
+過去の参考分析(JSON): {past}
+
+回答:"""
+
+
+# --------------------------------------------------------------------------
+# Pure parsing/normalisation helpers (unit-tested without any LLM call).
+# --------------------------------------------------------------------------
+def parse_intent(raw: str) -> str:
+    """Map a free-form model reply to a valid intent label."""
+    text = (raw or "").strip().lower()
+    for intent in _VALID_INTENTS:
+        if intent in text:
+            return intent
+    return "general"
+
+
+def parse_model_id(raw: str, valid_ids: set[str]) -> str | None:
+    """Extract a known model_id from a free-form reply, else None."""
+    text = (raw or "").strip()
+    if text.lower() in ("none", "なし", ""):
+        return None
+    # Exact match first, then substring (model ids are word-like).
+    if text in valid_ids:
+        return text
+    for mid in valid_ids:
+        if re.search(rf"\b{re.escape(mid)}\b", text):
+            return mid
+    return None
+
+
+def _coerce_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _clamp(value: float, spec: ParamSpec) -> float:
+    if spec.min is not None:
+        value = max(value, spec.min)
+    if spec.max is not None:
+        value = min(value, spec.max)
+    return value
+
+
+def parse_scenarios(
+    raw: str, model: ModelSpec, max_scenarios: int = 5
+) -> list[Scenario]:
+    """Parse the extract-scenarios JSON into validated ``Scenario`` objects.
+
+    - unknown parameter names are dropped
+    - non-numeric values are ignored
+    - values are clamped to each ParamSpec's [min, max]
+    - omitted parameters fall back to the model defaults
+    Malformed output yields a single default scenario rather than raising.
+    """
+    defaults = model.default_params()
+    data = _extract_json(raw)
+    raw_scenarios = []
+    if isinstance(data, dict):
+        raw_scenarios = data.get("scenarios") or []
+    if not isinstance(raw_scenarios, list) or not raw_scenarios:
+        return [Scenario(name="base", params=dict(defaults))]
+
+    scenarios: list[Scenario] = []
+    for i, item in enumerate(raw_scenarios[:max_scenarios]):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or f"scenario_{i + 1}")
+        params = dict(defaults)
+        raw_params = item.get("params")
+        if isinstance(raw_params, dict):
+            for key, val in raw_params.items():
+                spec = model.param(key)
+                if spec is None:
+                    continue
+                fv = _coerce_float(val)
+                if fv is None:
+                    continue
+                params[key] = _clamp(fv, spec)
+        scenarios.append(Scenario(name=name, params=params))
+    return scenarios or [Scenario(name="base", params=dict(defaults))]
+
+
+def _extract_json(raw: str) -> Any:
+    """Best-effort JSON extraction, tolerating ```json fences and prose."""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def _param_lines(model: ModelSpec) -> str:
+    lines = []
+    for p in model.params:
+        desc = p.description or p.label
+        lines.append(f"- {p.name}: {p.default} ({desc})")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+class GeminiPlanner(Planner):
+    """Production planner backed by Gemini (gemini-3.5-flash) via LangChain.
+
+    The chat model is created lazily so importing this module never requires an
+    API key or network access.
+    """
+
+    def __init__(
+        self,
+        model: str = "gemini-3.5-flash",
+        api_key: str | None = None,
+        temperature: float = 0.2,
+        max_scenarios: int = 5,
+        chat_model: Any | None = None,
+    ) -> None:
+        self._model_name = model
+        self._api_key = api_key
+        self._temperature = temperature
+        self._max_scenarios = max_scenarios
+        self._chat = chat_model  # injectable for testing
+
+    def _llm(self) -> Any:
+        if self._chat is None:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+
+            self._chat = ChatGoogleGenerativeAI(
+                model=self._model_name,
+                google_api_key=self._api_key,
+                temperature=self._temperature,
+            )
+        return self._chat
+
+    def _ask(self, prompt: str) -> str:
+        resp = self._llm().invoke(prompt)
+        content = getattr(resp, "content", resp)
+        return content if isinstance(content, str) else str(content)
+
+    def classify_intent(self, user_text: str, history: list[dict[str, Any]]) -> str:
+        return parse_intent(self._ask(_INTENT_PROMPT.format(user_text=user_text)))
+
+    def select_model(self, user_text: str, catalog: list[dict[str, str]]) -> str | None:
+        valid = {c["model_id"] for c in catalog}
+        raw = self._ask(
+            _SELECT_PROMPT.format(
+                catalog=json.dumps(catalog, ensure_ascii=False), user_text=user_text
+            )
+        )
+        return parse_model_id(raw, valid)
+
+    def extract_scenarios(self, user_text: str, model: ModelSpec) -> list[Scenario]:
+        raw = self._ask(
+            _EXTRACT_PROMPT.format(
+                model_name=model.name,
+                param_lines=_param_lines(model),
+                user_text=user_text,
+            )
+        )
+        return parse_scenarios(raw, model, self._max_scenarios)
+
+    def analyze(
+        self,
+        user_text: str,
+        model: ModelSpec | None,
+        simulation: dict[str, Any] | None,
+        past_references: list[dict[str, Any]],
+    ) -> str:
+        return self._ask(
+            _ANALYZE_PROMPT.format(
+                user_text=user_text,
+                model_name=model.name if model else "(なし)",
+                simulation=json.dumps(simulation, ensure_ascii=False, default=str),
+                past=json.dumps(past_references, ensure_ascii=False, default=str),
+            )
+        ).strip()
