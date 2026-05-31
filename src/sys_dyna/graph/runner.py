@@ -25,6 +25,8 @@ class TurnOutcome:
     # Populated when status == "completed".
     analysis: str | None = None
     simulation: dict[str, Any] | None = None
+    # Populated for the Monte Carlo / Bayesian-optimization branch.
+    simulation_analysis: dict[str, Any] | None = None
     selected_model_id: str | None = None
 
 
@@ -64,6 +66,9 @@ class TurnRunner:
                 "scenarios": [],
                 "confirmed": False,
                 "simulation": None,
+                "analysis_kind": None,
+                "analysis_spec": None,
+                "simulation_analysis": None,
                 "past_references": [],
                 "analysis": None,
                 "error": None,
@@ -100,6 +105,7 @@ class TurnRunner:
             intent=result.get("intent"),
             analysis=result.get("analysis"),
             simulation=result.get("simulation"),
+            simulation_analysis=result.get("simulation_analysis"),
             selected_model_id=result.get("selected_model_id"),
         )
 
@@ -131,12 +137,14 @@ def build_runner(
     engine: PySDEngine | None = None,
     persistence: Persistence | None = None,
     past_lookup: PastLookup | None = None,
+    agent: Any | None = None,
 ) -> TurnRunner:
     deps = GraphDeps(
         planner=planner,
         engine=engine or PySDEngine(),
         **({"persistence": persistence} if persistence else {}),
         **({"past_lookup": past_lookup} if past_lookup else {}),
+        **({"agent": agent} if agent else {}),
     )
     graph = build_graph(deps, checkpointer=checkpointer)
     return TurnRunner(graph)

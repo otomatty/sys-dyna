@@ -88,7 +88,12 @@ src/sys_dyna/
   simulation/                # ★ PySD エンジン
     engine.py                # モデルロード・実行・シナリオ並列
     catalog.py               # 事前定義モデルカタログ
+    objective.py             # 設定可能な目的関数（変数・集約・方向）
+    analysis/                # モンテカルロ分析 / ベイズ最適化（Optuna）エンジン
     upload.py                # .mdl/.xmile アップロード処理（Supabase Storage）
+  agents/                    # ★ シミュレーション・サブエージェント
+    simulation_agent.py      # SimulationAgent（MC / ベイズ最適化ツールを束ねる）
+    tools.py                 # monte_carlo / bayesian_optimization ツール
   tools/                     # 過去参照ツール（v1.0 を LangChain Tool 化して統合）
     query_sessions.py
     get_session_full.py
@@ -108,7 +113,7 @@ class AgentState(TypedDict):
     session_id: str
     user_id: str
     messages: Annotated[list[BaseMessage], add_messages]
-    intent: Literal["simulate", "past_reference", "followup", "general"] | None
+    intent: Literal["simulate", "past_reference", "montecarlo", "optimize", "followup", "general"] | None
     selected_model: ModelRef | None          # カタログ / アップロード参照
     extracted_params: dict[str, float] | None
     scenarios: list[Scenario]                 # シナリオ比較用（1件以上）
@@ -122,24 +127,30 @@ class AgentState(TypedDict):
 
 | ノード | 役割 |
 |---|---|
-| `classify_intent` | Gemini でユーザー意図を分類（simulate / past_reference / followup / general） |
+| `classify_intent` | Gemini でユーザー意図を分類（simulate / past_reference / montecarlo / optimize / followup / general） |
 | `retrieve_past` | 過去参照ツール群（`query_sessions` → `get_session_full` → `get_simulation_results`）を呼び、文脈を収集 |
 | `select_model` | カタログ照合 / アップロードモデル解決 / 直前モデル継続 |
 | `extract_params` | 自然言語からパラメータ・シナリオ集合を抽出（モデル仕様をコンテキストに与える） |
 | `confirm_params` | **`interrupt()` による HITL**。抽出パラメータ／シナリオをユーザーに提示し、確認・修正を受ける |
 | `run_simulation` | PySD でシナリオごとに実行（複数シナリオは並列 / fan-out） |
+| `prepare_analysis` | `montecarlo` / `optimize` 意図向けに、分布・探索空間・目的関数（解析設定）を構築 |
+| `confirm_analysis` | **`interrupt()` による HITL**。解析設定をユーザーに提示し、確認・修正を受ける |
+| `run_analysis` | `SimulationAgent` にモンテカルロ分析 / ベイズ最適化を委譲し、結果を集計 |
 | `persist` | 実行結果・パラメータを Supabase に保存 |
 | `analyze` | Gemini が数値結果を解釈し、要因・ボトルネック・示唆を自然言語で説明 |
 
 ```text
 START → classify_intent
-classify_intent ─┬─(simulate)──────→ select_model → extract_params → confirm_params
-                 ├─(past_reference)→ retrieve_past → analyze → END
-                 ├─(followup)──────→ extract_params (既存モデル継続)
-                 └─(general)───────→ analyze(回答) → END
+classify_intent ─┬─(simulate)──────────→ select_model → extract_params → confirm_params
+                 ├─(montecarlo/optimize)→ select_model → prepare_analysis → confirm_analysis
+                 ├─(past_reference)─────→ retrieve_past → analyze → END
+                 ├─(followup)──────────→ extract_params (既存モデル継続)
+                 └─(general)───────────→ analyze(回答) → END
 
-confirm_params ─(interrupt: 修正)→ extract_params で再提示
-confirm_params ─(承認)→ run_simulation → persist → analyze → END
+confirm_params  ─(interrupt: 修正)→ extract_params で再提示
+confirm_params  ─(承認)→ run_simulation → persist → analyze → END
+confirm_analysis ─(interrupt: 修正)→ prepare_analysis で再提示
+confirm_analysis ─(承認)→ run_analysis (SimulationAgent) → persist → END
 ```
 
 - **HITL 実装**: `confirm_params` で LangGraph の `interrupt()` を使い、Streamlit 側でパラメータ確認 UI を出す。ユーザーが「実行」を押すと `Command(resume=...)` でグラフを再開。

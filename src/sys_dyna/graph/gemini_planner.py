@@ -5,25 +5,46 @@ import logging
 import re
 from typing import Any
 
+from ..simulation.analysis import build_default_analysis_request
+from ..simulation.analysis.distributions import ParamDistribution, ParamRange
+from ..simulation.engine import SimulationError
 from ..simulation.models import ModelSpec, ParamSpec, Scenario
 from .planner import Planner
 
 
 logger = logging.getLogger(__name__)
 
-_VALID_INTENTS = ("simulate", "past_reference", "general")
+_VALID_INTENTS = ("simulate", "past_reference", "montecarlo", "optimize", "general")
 
 _INTENT_PROMPT = """\
 あなたはシステムダイナミクス分析ツールのルータです。
 ユーザーの発言を次のいずれかに分類し、ラベルのみを1語で出力してください。
 
-- simulate: シミュレーションの実行や「もし〜したら」の予測を求めている
+- montecarlo: パラメータのばらつき・不確実性・リスク・確率分布・感度を調べたい
+- optimize: パラメータを最適化したい(最大化/最小化・「最適な値は?」「ベイズ最適化」)
+- simulate: 上記以外で、シミュレーションの実行や「もし〜したら」の予測を求めている
   (直前にシミュレーションを行った後の「ではXを〜に変えたら」等の追問も含む)
 - past_reference: 過去・以前の分析事例の参照だけを求めている
 - general: 上記以外の一般的な質問・雑談
 {history}
 ユーザー発言: {user_text}
 ラベル:"""
+
+_ANALYSIS_PROMPT = """\
+ユーザーの要求を、高度なシミュレーション解析の設定(JSON)に変換します。
+解析種別: {kind}  (montecarlo=モンテカルロ分析 / optimize=ベイズ最適化)
+モデル: {model_name}
+調整可能なパラメータ(name: 既定値, 説明):
+{param_lines}
+出力変数の候補: {outputs}
+{current}{history}
+ユーザー発言: {user_text}
+
+次の JSON のみを出力してください(該当しないキーは省略可、既定が使われます)。
+- objective: {{"variable": 出力変数名, "aggregate": "final|mean|min|max|sum", "direction": "maximize|minimize"}}
+- montecarlo の場合: "distributions": [{{"name": パラメータ名, "kind": "normal|uniform|triangular|lognormal", "mean":, "std":, "low":, "high":}}], "iterations": 整数
+- optimize の場合: "search_space": [{{"name": パラメータ名, "low": 下限, "high": 上限}}], "n_trials": 整数
+JSON:"""
 
 _SELECT_PROMPT = """\
 ユーザーの要求に最も適したシミュレーションモデルを1つ選びます。
@@ -182,6 +203,80 @@ def parse_scenarios(
     return scenarios or [Scenario(name="base", params=dict(base))]
 
 
+def _merge_analysis_request(
+    default: dict[str, Any],
+    data: Any,
+    kind: str,
+    model: ModelSpec,
+) -> dict[str, Any]:
+    """Overlay an LLM-produced analysis spec onto the heuristic default.
+
+    Only well-formed, model-relevant pieces are taken from ``data`` so a partial
+    or noisy LLM reply degrades to the always-runnable default rather than
+    producing an invalid request. Unknown parameter names are dropped.
+    """
+    if not isinstance(data, dict):
+        return default
+    valid_names = {p.name for p in model.params}
+    merged = dict(default)
+
+    obj = data.get("objective")
+    if isinstance(obj, dict):
+        base_obj = dict(default["objective"])
+        # Only accept a variable the model actually outputs; an arbitrary LLM
+        # string would otherwise pass through and fail later as unknown_variable.
+        if obj.get("variable") in model.output_variables:
+            base_obj["variable"] = obj["variable"]
+        if obj.get("aggregate") in ("final", "initial", "mean", "min", "max", "sum"):
+            base_obj["aggregate"] = obj["aggregate"]
+        if obj.get("direction") in ("maximize", "minimize"):
+            base_obj["direction"] = obj["direction"]
+        merged["objective"] = base_obj
+
+    # Validate each LLM-produced entry by constructing it the same way the tools
+    # will. A partial/malformed entry (e.g. a normal distribution missing
+    # mean/std) is dropped rather than replacing the runnable heuristic default,
+    # so a noisy reply degrades gracefully instead of failing the whole analysis.
+    if kind == "montecarlo":
+        raw = data.get("distributions")
+        if isinstance(raw, list):
+            dists = [d for d in raw if _valid_entry(ParamDistribution, d, valid_names)]
+            if dists:
+                merged["distributions"] = dists
+        it = _coerce_int(data.get("iterations"))
+        if it and it > 0:
+            merged["iterations"] = it
+    else:  # optimize
+        raw = data.get("search_space")
+        if isinstance(raw, list):
+            space = [r for r in raw if _valid_entry(ParamRange, r, valid_names)]
+            if space:
+                merged["search_space"] = space
+        nt = _coerce_int(data.get("n_trials"))
+        if nt and nt > 0:
+            merged["n_trials"] = nt
+    return merged
+
+
+def _valid_entry(factory: Any, entry: Any, valid_names: set[str]) -> bool:
+    """True if ``entry`` is a dict naming a real parameter and ``factory`` (a
+    ParamDistribution/ParamRange ``from_dict``) accepts it without error."""
+    if not isinstance(entry, dict) or entry.get("name") not in valid_names:
+        return False
+    try:
+        factory.from_dict(entry)
+    except SimulationError:
+        return False
+    return True
+
+
+def _coerce_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _extract_json(raw: str) -> Any:
     """Best-effort JSON extraction, tolerating ```json fences and prose."""
     if not raw:
@@ -291,6 +386,40 @@ class GeminiPlanner(Planner):
             )
         )
         return parse_scenarios(raw, model, self._max_scenarios, base_params)
+
+    def build_analysis_request(
+        self,
+        user_text: str,
+        model: ModelSpec,
+        kind: str,
+        history: list[dict[str, Any]],
+        base_params: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        normalized = "montecarlo" if kind not in ("montecarlo", "optimize") else kind
+        # Heuristic default is the floor: it always yields a runnable spec, and
+        # we overlay only the parts the LLM returns well-formed.
+        request = build_default_analysis_request(user_text, model, normalized, base_params)
+        current = ""
+        if base_params:
+            base = resolve_base_params(model, base_params)
+            current = "現在の設定値: " + json.dumps(base, ensure_ascii=False) + "\n"
+        try:
+            raw = self._ask(
+                _ANALYSIS_PROMPT.format(
+                    kind=normalized,
+                    model_name=model.name,
+                    param_lines=_param_lines(model),
+                    outputs=", ".join(model.output_variables) or "(モデル既定)",
+                    current=current,
+                    user_text=user_text,
+                    history=format_history(history),
+                )
+            )
+            data = _extract_json(raw)
+        except Exception:  # pragma: no cover - defensive: fall back to default
+            logger.exception("build_analysis_request LLM call failed; using default")
+            data = None
+        return _merge_analysis_request(request, data, normalized, model)
 
     def analyze(
         self,

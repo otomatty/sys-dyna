@@ -69,3 +69,50 @@ def render_simulation(simulation: dict[str, Any] | None, key_prefix: str = "sim"
 
     for warning in simulation.get("warnings", []):
         st.warning(warning)
+
+
+def render_analysis_result(analysis: dict[str, Any] | None) -> None:
+    """Render a Monte Carlo / Bayesian-optimization result payload.
+
+    Uses non-widget elements only (metric/table/json), so several results in the
+    chat history don't need unique widget keys to avoid duplicate-ID errors.
+    """
+    import streamlit as st
+
+    if not analysis or analysis.get("error"):
+        return
+
+    kind = analysis.get("kind")
+    if kind == "montecarlo":
+        stats = analysis.get("stats", {})
+        pct = stats.get("percentiles", {})
+        cols = st.columns(4)
+        cols[0].metric("平均", f"{stats.get('mean', 0.0):.2f}")
+        cols[1].metric("標準偏差", f"{stats.get('std', 0.0):.2f}")
+        cols[2].metric("P5", f"{pct.get('p5', 0.0):.2f}")
+        cols[3].metric("P95", f"{pct.get('p95', 0.0):.2f}")
+        sens = analysis.get("sensitivities") or {}
+        if sens:
+            st.caption("入力感度（目的値との相関）")
+            st.table(
+                {
+                    "パラメータ": list(sens.keys()),
+                    "相関": [round(float(v), 3) for v in sens.values()],
+                }
+            )
+    elif kind == "optimize":
+        st.metric("最適な目的値", f"{analysis.get('best_value', 0.0):.2f}")
+        best = analysis.get("best_params") or {}
+        if best:
+            st.caption("最適パラメータ")
+            st.table(
+                {
+                    "パラメータ": list(best.keys()),
+                    "値": [round(float(v), 4) for v in best.values()],
+                }
+            )
+
+    for warning in analysis.get("warnings", []):
+        st.warning(warning)
+    with st.expander("詳細データ"):
+        st.json(analysis)

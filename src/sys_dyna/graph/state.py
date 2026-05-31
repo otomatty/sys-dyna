@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal, TypedDict
 
 
-Intent = Literal["simulate", "past_reference", "general"]
+Intent = Literal["simulate", "past_reference", "montecarlo", "optimize", "general"]
 
 
 class ScenarioDict(TypedDict):
@@ -36,6 +36,15 @@ class AgentState(TypedDict, total=False):
     confirmed: bool
 
     simulation: dict[str, Any] | None  # SimulationRun.to_payload()
+
+    # Advanced-analysis branch (Monte Carlo / Bayesian optimization), handled by
+    # the SimulationAgent. ``analysis_kind`` selects the tool, ``analysis_spec``
+    # is the (HITL-confirmable) tool-arguments dict, and ``simulation_analysis``
+    # holds the result payload. Kept JSON-safe for the checkpointer.
+    analysis_kind: str | None
+    analysis_spec: dict[str, Any] | None
+    simulation_analysis: dict[str, Any] | None
+
     past_references: list[dict[str, Any]]
     analysis: str | None
     error: str | None
